@@ -14,14 +14,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-
-	"github.com/unidoc/unidoc/common"
 )
 
 func main() {
-	debug := false // Write debug level info to stdout?
-	keep := false  // Keep the rasters used for PDF comparison"
-	flag.BoolVar(&debug, "d", false, "Enable debug logging")
+	keep := false // Keep the rasters used for PDF comparison"
 	flag.BoolVar(&keep, "k", false, "Keep the difference rasters")
 	flag.Parse()
 	args := flag.Args()
@@ -53,7 +49,7 @@ func colorDirectoryPages(mask, dir string, keep bool) (int, []int, error) {
 	fmt.Printf("pattern=%q\n", pattern)
 	files, err := filepath.Glob(pattern)
 	if err != nil {
-		common.Log.Error("colorDirectoryPages: Glob failed. pattern=%#q err=%v", pattern, err)
+		fmt.Fprintf(os.Stderr, "colorDirectoryPages: Glob failed. pattern=%#q err=%v\n", pattern, err)
 		return 0, nil, err
 	}
 
@@ -96,7 +92,7 @@ func isColorImage(path string, keep bool) (bool, error) {
 	if isColor && keep {
 		markedPath := fmt.Sprintf("%s.marked.png", path)
 		markedImg, summary := imgMarkColor(img)
-		common.Log.Error("markedPath=%#q %s", markedPath, summary)
+		fmt.Fprintf(os.Stderr, "markedPath=%#q %s\n", markedPath, summary)
 		err = writeImage(markedPath, markedImg)
 	}
 	return isColor, err
@@ -139,7 +135,7 @@ func imgMarkColor(imgIn image.Image) (image.Image, string) {
 			}
 		}
 	}
-	return img, summarizeSeries(data)
+	return img, summarizeSeries(w, h, data)
 }
 
 func normalize(v int) float64 {
@@ -153,7 +149,7 @@ func abs(a int) int {
 	return a
 }
 
-func summarizeSeries(data []float64) string {
+func summarizeSeries(data []float64, w, h, int) string {
 	n := len(data)
 	total := 0.0
 	min := +1e20
@@ -168,14 +164,15 @@ func summarizeSeries(data []float64) string {
 		}
 	}
 	mean := total / float64(n)
-	return fmt.Sprintf("n=%d min=%.3f mean=%.3f max=%.3f", n, min, mean, max)
+    percent := float64(n) / float64(w) / float64(h)
+	return fmt.Sprintf("n=%d (%.1f%%) min=%.3f mean=%.3f max=%.3f", n, percent, min, mean, max)
 }
 
 // readImage reads image file `path` and returns its contents as an Image.
 func readImage(path string) (image.Image, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		common.Log.Error("readImage: Could not open file. path=%#q err=%v", path, err)
+		fmt.Fprintf(os.Stderr, "readImage: Could not open file. path=%#q err=%v\n", path, err)
 		return nil, err
 	}
 	defer f.Close()
@@ -188,7 +185,7 @@ func readImage(path string) (image.Image, error) {
 func writeImage(path string, img image.Image) error {
 	f, err := os.Create(path)
 	if err != nil {
-		common.Log.Error("writeImage: Could not create file. path=%#q err=%v", path, err)
+		fmt.Fprintf(os.Stderr, "writeImage: Could not create file. path=%#q err=%v\n", path, err)
 		return err
 	}
 	defer f.Close()

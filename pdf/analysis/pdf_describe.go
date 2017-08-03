@@ -133,15 +133,21 @@ func main() {
 		report(writers, "%3d of %d %#-30q  (%6d)", idx, len(pdfList), name, inputSize)
 
 		result := "pass"
-		t0 := time.Now()
 
-		numPages, colorPages, err := describePdf(inputPath, strictColorPages)
+		t0 := time.Now()
+		numPages, colorPages, width, height, err := describePdf(inputPath, strictColorPages)
 		dt := time.Since(t0)
+
 		if err != nil {
 			common.Log.Error("describePdf failed. err=%v", err)
 			result = "bad"
 		}
-		report(writers, " %d pages %d color %.3f sec", numPages, len(colorPages), dt.Seconds())
+		if width <= 1.0 || height <= 1.0 {
+			common.Log.Error("Width, Height not specified")
+			result = "bad"
+		}
+		report(writers, " %5.1f x %5.1f mm, %2d pages, %2d color, %6.3f sec",
+			width, height, numPages, len(colorPages), dt.Seconds())
 
 		if result == "pass" {
 			if !equalSlices(colorPagesIn, colorPages) {
@@ -194,46 +200,59 @@ func main() {
 }
 
 // describePdf reads PDF `inputPath` and returns number of pages, slice of color page numbers (1-offset)
-func describePdf(inputPath string, strictColorPages []int) (int, []int, error) {
+func describePdf(inputPath string, strictColorPages []int) (int, []int, float64, float64, error) {
 
 	f, err := os.Open(inputPath)
 	if err != nil {
-		return 0, []int{}, err
+		return 0, []int{}, 0.0, 0.0, err
 	}
 	defer f.Close()
 
 	pdfReader, err := pdf.NewPdfReader(f)
 	if err != nil {
-		return 0, []int{}, err
+		return 0, []int{}, 0.0, 0.0, err
 	}
 
 	isEncrypted, err := pdfReader.IsEncrypted()
 	if err != nil {
-		return 0, []int{}, err
+		return 0, []int{}, 0.0, 0.0, err
 	}
 	if isEncrypted {
 		_, err = pdfReader.Decrypt([]byte(""))
 		if err != nil {
-			return 0, []int{}, err
+			return 0, []int{}, 0.0, 0.0, err
 		}
 	}
 
 	numPages, err := pdfReader.GetNumPages()
 	if err != nil {
-		return numPages, []int{}, err
+		return numPages, []int{}, 0.0, 0.0, err
 	}
 
 	colorPages := []int{}
+	var width, height float64
 
 	for i := 0; i < numPages; i++ {
 		pageNum := i + 1
 		page := pdfReader.PageList[i]
 		common.Log.Debug("^^^^page %d", pageNum)
 
+		var w, h float64
+		w, h, err := pageSize(page)
+		if err != nil {
+			common.Log.Error("pageSize err=%v", err)
+		}
+		if w > width {
+			width = w
+		}
+		if h > height {
+			height = h
+		}
+
 		desc := fmt.Sprintf("%s:page%d", filepath.Base(inputPath), pageNum)
 		colored, err := isPageColored(page, desc, false)
 		if err != nil {
-			return numPages, colorPages, err
+			return numPages, colorPages, 0.0, 0.0, err
 		}
 		if strictColorPages != nil {
 			strictColored := contains(strictColorPages, pageNum)
@@ -249,10 +268,17 @@ func describePdf(inputPath string, strictColorPages []int) (int, []int, error) {
 		if colored {
 			colorPages = append(colorPages, pageNum)
 		}
-
 	}
 
-	return numPages, colorPages, nil
+	return numPages, colorPages, width, height, nil
+}
+
+func pageSize(page *pdf.PdfPage) (float64, float64, error) {
+	mediaBox, err := page.GetMediaBox()
+	if err != nil {
+		return 0.0, 0.0, nil
+	}
+	return math.Abs(mediaBox.Urx-mediaBox.Llx) / 72.0 * 25.4, math.Abs(mediaBox.Ury-mediaBox.Lly) / 72.0 * 25.4, nil
 }
 
 // isPageColored returns true if `page` contains color. It also references

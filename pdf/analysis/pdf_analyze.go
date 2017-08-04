@@ -30,21 +30,12 @@ import (
 	pdf "github.com/unidoc/unidoc/pdf/model"
 )
 
-func initUniDoc(debug bool) error {
-
-	pdf.SetPdfCreator("OmniPrint")
-
-	// To make the library log we just have to initialize the logger which satisfies
-	// the common.Logger interface, common.DummyLogger is the default and
-	// does not do anything. Very easy to implement your own.
-	// common.SetLogger(common.DummyLogger{})
+func initUniDoc(debug bool) {
 	logLevel := common.LogLevelInfo
 	if debug {
 		logLevel = common.LogLevelDebug
 	}
 	common.SetLogger(common.ConsoleLogger{LogLevel: logLevel})
-
-	return nil
 }
 
 const usage = `Usage:
@@ -64,9 +55,6 @@ func main() {
 	}
 
 	err := initUniDoc(debug)
-	if err != nil {
-		os.Exit(1)
-	}
 
 	inputPath := args[0]
 
@@ -128,7 +116,7 @@ func describePdf(inputPath string) (int, []int, float64, float64, error) {
 	for i := 0; i < numPages; i++ {
 		pageNum := i + 1
 		page := pdfReader.PageList[i]
-		common.Log.Debug("^^^^page %d", pageNum)
+		common.Log.Debug("page %d", pageNum)
 
 		w, h, _ := pageSize(page)
 		if w > width {
@@ -141,7 +129,7 @@ func describePdf(inputPath string) (int, []int, float64, float64, error) {
 		desc := fmt.Sprintf("%s:page%d", filepath.Base(inputPath), pageNum)
 		colored, err := isPageColored(page, desc, false)
 		if err != nil {
-			return numPages, colorPages, 0.0, 0.0, err
+			return numPages, colorPages, width, height, err
 		}
 		if colored {
 			colorPages = append(colorPages, pageNum)

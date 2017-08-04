@@ -885,7 +885,7 @@ var gsImageRegex = regexp.MustCompile(gsImagePattern)
 // runGhostscript runs Ghostscript on file `pdf` to create file one png file per page in directory
 // `outputDir`
 func runGhostscript(pdf, outputDir string) error {
-	common.Log.Debug("runGhostscript: pdf=%#q outputDir=%#q", pdf, outputDir)
+	common.Log.Trace("runGhostscript: pdf=%#q outputDir=%#q", pdf, outputDir)
 	outputPath := filepath.Join(outputDir, gsImageFormat)
 	output := fmt.Sprintf("-sOutputFile=%s", outputPath)
 
@@ -900,7 +900,7 @@ func runGhostscript(pdf, outputDir string) error {
 		"-dGraphicsAlphaBits=1",
 		output,
 		pdf)
-	common.Log.Debug("runGhostscript: cmd=%#q", cmd.Args)
+	common.Log.Trace("runGhostscript: cmd=%#q", cmd.Args)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

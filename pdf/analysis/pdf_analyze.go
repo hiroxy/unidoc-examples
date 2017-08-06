@@ -54,7 +54,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	err := initUniDoc(debug)
+	initUniDoc(debug)
 
 	inputPath := args[0]
 
@@ -465,6 +465,7 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 						ximg.Filter.GetFilterName(), ximg.ColorSpace,
 						ximg.ImageMask, *ximg.Width, *ximg.Height)
 				}
+				// Ignore gray color spaces
 				if _, isIndexed := ximg.ColorSpace.(*pdf.PdfColorspaceSpecialIndexed); !isIndexed {
 					if ximg.ColorSpace.GetNumComponents() == 1 {
 						return nil
@@ -477,7 +478,7 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 					colored = true
 					return nil
 				// These filters are only used with grayscale images
-				case "CCITTDecode", "JBIG2Decode", "RunLengthDecode":
+				case "CCITTDecode", "JBIG2Decode":
 					return nil
 				}
 

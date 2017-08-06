@@ -39,21 +39,12 @@ import (
 	pdf "github.com/unidoc/unidoc/pdf/model"
 )
 
-func initUniDoc(debug bool) error {
-
-	pdf.SetPdfCreator("Peter Williams")
-
-	// To make the library log we just have to initialize the logger which satisfies
-	// the common.Logger interface, common.DummyLogger is the default and
-	// does not do anything. Very easy to implement your own.
-	// common.SetLogger(common.DummyLogger{})
+func initUniDoc(debug bool) {
 	logLevel := common.LogLevelInfo
 	if debug {
 		logLevel = common.LogLevelDebug
 	}
 	common.SetLogger(common.ConsoleLogger{LogLevel: logLevel})
-
-	return nil
 }
 
 const usage = `Usage:
@@ -87,10 +78,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	err := initUniDoc(debug)
-	if err != nil {
-		os.Exit(1)
-	}
+	initUniDoc(debug)
+
 	compDir := makeUniqueDir("compare.pdfs")
 	fmt.Fprintf(os.Stderr, "compDir=%#q\n", compDir)
 	defer removeDir(compDir)
@@ -597,6 +586,7 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 						ximg.Filter.GetFilterName(), ximg.ColorSpace,
 						ximg.ImageMask, *ximg.Width, *ximg.Height)
 				}
+				// Ignore gray color spaces
 				if _, isIndexed := ximg.ColorSpace.(*pdf.PdfColorspaceSpecialIndexed); !isIndexed {
 					if ximg.ColorSpace.GetNumComponents() == 1 {
 						return nil
@@ -609,7 +599,7 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 					colored = true
 					return nil
 				// These filters are only used with grayscale images
-				case "CCITTDecode", "JBIG2Decode", "RunLengthDecode":
+				case "CCITTDecode", "JBIG2Decode":
 					return nil
 				}
 

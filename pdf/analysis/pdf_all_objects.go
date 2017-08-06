@@ -75,13 +75,13 @@ func inspectPdf(inputPath string) error {
 
 	// Output.
 	fmt.Printf("%d PDF objects:\n", len(objNums))
-	for i, num := range objNums {
-		obj, err := pdfReader.GetIndirectObjectByNumber(num)
+	for i, objNum := range objNums {
+		obj, err := pdfReader.GetIndirectObjectByNumber(objNum)
 		if err != nil {
 			return err
 		}
 		fmt.Println("=========================================================")
-		fmt.Printf("%3d: %d 0 %T\n", i, num, obj)
+		fmt.Printf("%3d: %d 0 %T\n", i, objNum, obj)
 		if stream, is := obj.(*pdfcore.PdfObjectStream); is {
 			decoded, err := pdfcore.DecodeStream(stream)
 			if err != nil {
@@ -92,6 +92,7 @@ func inspectPdf(inputPath string) error {
 			fmt.Printf("%T\n", indObj.PdfObject)
 			fmt.Printf("%s\n", indObj.PdfObject.String())
 		}
+
 	}
 
 	return nil

@@ -2,9 +2,18 @@
  * Detect the number of pages and the color pages (1-offset) all pages in a list of PDF files.
  * Compares these results to running Ghostscript on the PDF files and reports an error if the results don't match.
  *
- * Run as: ./pdf_describe [-r <output file> [-d] [-a] testdata/*.pdf
+ * Run as: ./pdf_count_color_pages_bench [-o processDir] [-d] [-a] testdata/*.pdf > blah
  *
- *  See the other command line options in `usage`
+ * The main results are written to stderr so you will see them in your console.
+ * Detailed information is written to stdout and you will see them in blah.
+ *
+ *  See the other command line options in the top of main()
+ *      -o processDir - Temporary processing directory (default compare.pdfs)
+ *      -d: Debug level logging
+ *      -a: Keep converting PDF files after failures
+ *      -min <val>: Minimum PDF file size to test
+ *      -max <val>: Maximum PDF file size to test
+ *      -r <name>: Name of results file
  */
 
 package main
@@ -42,10 +51,10 @@ func initUniDoc(debug bool) {
 }
 
 const usage = `Usage:
-pdf_describe -o <output directory> [-d][-a][-min <val>][-max <val>] <file1> <file2> ...
+pdf_count_color_pages_bench [-o <processDir>] [-d][-a][-min <val>][-max <val>] <file1> <file2> ...
+-o processDir - Temporary processing directory (default compare.pdfs)
 -d: Debug level logging
 -a: Keep converting PDF files after failures
--s: Log detailed info when a page color is detected incorrectly
 -min <val>: Minimum PDF file size to test
 -max <val>: Maximum PDF file size to test
 -r <name>: Name of results file
@@ -58,7 +67,9 @@ func main() {
 	var minSize int64 = -1 // Minimum size for an input PDF to be processed.
 	var maxSize int64 = -1 // Maximum size for an input PDF to be processed.
 	var results string     // Results file
+	var outputDir string
 
+	flag.StringVar(&outputDir, "o", "compare.pdfs", "Set output dir for ghostscript")
 	flag.BoolVar(&debug, "d", false, "Enable debug logging")
 	flag.BoolVar(&strict, "s", false, "Enable strict checking")
 	flag.BoolVar(&runAllTests, "a", false, "Run all tests. Don't stop at first failure")
@@ -74,7 +85,7 @@ func main() {
 
 	initUniDoc(debug)
 
-	compDir := makeUniqueDir("compare.pdfs")
+	compDir := makeUniqueDir(outputDir)
 	fmt.Fprintf(os.Stderr, "compDir=%#q\n", compDir)
 	defer removeDir(compDir)
 
@@ -115,21 +126,15 @@ func main() {
 		report(writers, "%3d of %d %#-30q  (%6d)", idx, len(pdfList), name, inputSize)
 
 		result := "pass"
-
 		t0 := time.Now()
-		numPages, colorPages, width, height, err := describePdf(inputPath, strictColorPages)
-		dt := time.Since(t0)
 
+		numPages, colorPages, err := describePdf(inputPath, strictColorPages)
+		dt := time.Since(t0)
 		if err != nil {
 			common.Log.Error("describePdf failed. err=%v", err)
 			result = "bad"
 		}
-		if width <= 1.0 || height <= 1.0 {
-			common.Log.Error("Width, Height not specified")
-			result = "bad"
-		}
-		report(writers, " %5.1f x %5.1f mm, %2d pages, %2d color, %6.3f sec",
-			width, height, numPages, len(colorPages), dt.Seconds())
+		report(writers, " %d pages %d color %.3f sec", numPages, len(colorPages), dt.Seconds())
 
 		if result == "pass" {
 			if !equalSlices(colorPagesIn, colorPages) {
@@ -182,58 +187,46 @@ func main() {
 }
 
 // describePdf reads PDF `inputPath` and returns number of pages, slice of color page numbers (1-offset)
-func describePdf(inputPath string, strictColorPages []int) (int, []int, float64, float64, error) {
+func describePdf(inputPath string, strictColorPages []int) (int, []int, error) {
 
 	f, err := os.Open(inputPath)
 	if err != nil {
-		return 0, []int{}, 0.0, 0.0, err
+		return 0, []int{}, err
 	}
 	defer f.Close()
 
 	pdfReader, err := pdf.NewPdfReader(f)
 	if err != nil {
-		return 0, []int{}, 0.0, 0.0, err
+		return 0, []int{}, err
 	}
 
 	isEncrypted, err := pdfReader.IsEncrypted()
 	if err != nil {
-		return 0, []int{}, 0.0, 0.0, err
+		return 0, []int{}, err
 	}
 	if isEncrypted {
 		_, err = pdfReader.Decrypt([]byte(""))
 		if err != nil {
-			return 0, []int{}, 0.0, 0.0, err
+			return 0, []int{}, err
 		}
 	}
 
 	numPages, err := pdfReader.GetNumPages()
 	if err != nil {
-		return numPages, []int{}, 0.0, 0.0, err
+		return numPages, []int{}, err
 	}
 
 	colorPages := []int{}
-	var width, height float64
 
 	for i := 0; i < numPages; i++ {
 		pageNum := i + 1
 		page := pdfReader.PageList[i]
 		common.Log.Debug("^^^^page %d", pageNum)
 
-		w, h, err := pageSize(page)
-		if err != nil {
-			common.Log.Error("pageSize err=%v", err)
-		}
-		if w > width {
-			width = w
-		}
-		if h > height {
-			height = h
-		}
-
 		desc := fmt.Sprintf("%s:page%d", filepath.Base(inputPath), pageNum)
 		colored, err := isPageColored(page, desc, false)
 		if err != nil {
-			return numPages, colorPages, 0.0, 0.0, err
+			return numPages, colorPages, err
 		}
 		if strictColorPages != nil {
 			strictColored := contains(strictColorPages, pageNum)
@@ -249,24 +242,10 @@ func describePdf(inputPath string, strictColorPages []int) (int, []int, float64,
 		if colored {
 			colorPages = append(colorPages, pageNum)
 		}
+
 	}
 
-	return numPages, colorPages, width, height, nil
-}
-
-// pageSize returns the width and height of `page` in mm
-func pageSize(page *pdf.PdfPage) (float64, float64, error) {
-	mediaBox, err := page.GetMediaBox()
-	if err != nil {
-		return 0.0, 0.0, nil
-	}
-	return toMM(mediaBox.Urx - mediaBox.Llx), toMM(mediaBox.Ury - mediaBox.Lly), nil
-}
-
-// toMM takes the absolute value of `x` in points, converts to mm and rounds to nearest .1 mm
-func toMM(x float64) float64 {
-	y := math.Abs(x) / 72.0 * 25.4
-	return math.Floor(y*10+0.5) / 10.0
+	return numPages, colorPages, nil
 }
 
 // isPageColored returns true if `page` contains color. It also references

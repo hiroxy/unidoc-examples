@@ -42,14 +42,6 @@ import (
 	pdf "github.com/unidoc/unidoc/pdf/model"
 )
 
-func initUniDoc(debug bool) {
-	logLevel := common.LogLevelInfo
-	if debug {
-		logLevel = common.LogLevelDebug
-	}
-	common.SetLogger(common.ConsoleLogger{LogLevel: logLevel})
-}
-
 const usage = `Usage:
 pdf_count_color_pages_bench [-o <processDir>] [-d][-a][-min <val>][-max <val>] <file1> <file2> ...
 -o processDir - Temporary processing directory (default compare.pdfs)
@@ -60,22 +52,38 @@ pdf_count_color_pages_bench [-o <processDir>] [-d][-a][-min <val>][-max <val>] <
 -r <name>: Name of results file
 `
 
-func main() {
-	debug := false         // Write debug level info to stdout?
-	strict := true         // panic immediately a page color detection error occurs"
-	runAllTests := false   // Don't stop when a PDF file fails to process?
-	var minSize int64 = -1 // Minimum size for an input PDF to be processed.
-	var maxSize int64 = -1 // Maximum size for an input PDF to be processed.
-	var results string     // Results file
-	var outputDir string
+func initUniDoc(debug bool) {
 
-	flag.StringVar(&outputDir, "o", "compare.pdfs", "Set output dir for ghostscript")
+	pdf.SetPdfCreator("Peter Williams")
+
+	// To make the library log we just have to initialise the logger which satisfies
+	// the common.Logger interface, common.DummyLogger is the default and
+	// does not do anything. Very easy to implement your own.
+	// common.SetLogger(common.DummyLogger{})
+	logLevel := common.LogLevelInfo
+	if debug {
+		logLevel = common.LogLevelDebug
+	}
+	common.SetLogger(common.ConsoleLogger{LogLevel: logLevel})
+}
+
+func main() {
+	debug := false       // Write debug level info to stdout?
+	runAllTests := false // Don't stop when a PDF file fails to process?
+	compRoot := ""
+	var minSize int64 = -1 // Minimum size for an input PDF to be processed
+	var maxSize int64 = -1 // Maximum size for an input PDF to be processed
+	results := ""          // Results are written here
+	strict := true         // panic immediately a page color detection error occurs"
+
 	flag.BoolVar(&debug, "d", false, "Enable debug logging")
-	flag.BoolVar(&strict, "s", false, "Enable strict checking")
 	flag.BoolVar(&runAllTests, "a", false, "Run all tests. Don't stop at first failure")
+	flag.StringVar(&compRoot, "o", "compare.pdfs", "Set output dir for ghostscript")
 	flag.Int64Var(&minSize, "min", -1, "Minimum size of files to process (bytes)")
 	flag.Int64Var(&maxSize, "max", -1, "Maximum size of files to process (bytes)")
 	flag.StringVar(&results, "r", "", "Results file")
+	flag.BoolVar(&strict, "s", false, "Enable strict checking")
+
 	flag.Parse()
 	args := flag.Args()
 	if len(args) < 1 {
@@ -85,8 +93,8 @@ func main() {
 
 	initUniDoc(debug)
 
-	compDir := makeUniqueDir(outputDir)
-	fmt.Fprintf(os.Stderr, "compDir=%#q\n", compDir)
+	compDir := makeUniqueDir(compRoot)
+	fmt.Printf("compDir=%#q\n", compDir)
 	defer removeDir(compDir)
 
 	writers := []io.Writer{os.Stderr}
@@ -248,6 +256,10 @@ func describePdf(inputPath string, strictColorPages []int) (int, []int, error) {
 	return numPages, colorPages, nil
 }
 
+// =================================================================================================
+// Page color detection code goes here
+// =================================================================================================
+
 // isPageColored returns true if `page` contains color. It also references
 // XObject Images and Forms to _possibly_ record if they contain color
 func isPageColored(page *pdf.PdfPage, desc string, debug bool) (bool, error) {
@@ -294,7 +306,7 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 
 	colored := false                                    // Has a colored mark been detected in the stream?
 	coloredPatterns := map[pdfcore.PdfObjectName]bool{} // List of already detected patterns. Re-use for subsequent detections.
-	coloredShadings := map[string]bool{}                // List of already detected shadings. Re-use for subsequent detections.
+	coloredShadings := map[pdfcore.PdfObjectName]bool{} // List of already detected shadings. Re-use for subsequent detections.
 
 	// The content stream processor keeps track of the graphics state and we can make our own handlers to process
 	// certain commands using the AddHandler method. In this case, we hook up to color related operands, and for image
@@ -436,7 +448,7 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 				if !ok {
 					return errors.New("sh parameter should be a name")
 				}
-				if hasCol, has := coloredShadings[string(*shname)]; has {
+				if hasCol, has := coloredShadings[*shname]; has {
 					// Already processed, no need to do anything.
 					colored = colored || hasCol
 					if debug {
@@ -447,14 +459,14 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 
 				shading, found := resources.GetShadingByName(*shname)
 				if !found {
-					common.Log.Error("Shading not defined in resources. shname=%#q", string(*shname))
+					common.Log.Error("Shading not defined in resources. shname=%#q", *shname)
 					return errors.New("Shading not defined in resources")
 				}
 				hasCol, err := isShadingColored(shading)
 				if err != nil {
 					return err
 				}
-				coloredShadings[string(*shname)] = hasCol
+				coloredShadings[*shname] = hasCol
 			}
 			return nil
 		})
@@ -480,6 +492,32 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 			if debug {
 				common.Log.Info("iimg=%s", iimg)
 			}
+
+			cs, err := iimg.GetColorSpace(resources)
+			if err != nil {
+				common.Log.Error("Error getting color space for inline image: %v", err)
+				return err
+			}
+
+			if cs.GetNumComponents() == 1 {
+				return nil
+			}
+
+			encoder, err := iimg.GetEncoder()
+			if err != nil {
+				common.Log.Error("Error getting encoder for inline image: %v", err)
+				return err
+			}
+
+			switch encoder.GetFilterName() {
+			// TODO: Add JPEG2000 encoding/decoding. Until then we assume JPEG200 images are color
+			case "JPXDecode":
+				return nil
+			// These filters are only used with grayscale images
+			case "CCITTDecode", "JBIG2Decode":
+				return nil
+			}
+
 			img, err := iimg.ToImage(resources)
 			if err != nil {
 				common.Log.Error("Error converting inline image to image: %v", err)
@@ -490,15 +528,6 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 				common.Log.Info("img=%v %d", img.ColorComponents, img.BitsPerComponent)
 			}
 
-			if img.ColorComponents <= 1 {
-				return nil
-			}
-
-			cs, err := iimg.GetColorSpace(resources)
-			if err != nil {
-				common.Log.Error("Error getting color space for inline image: %v", err)
-				return err
-			}
 			rgbImg, err := cs.ImageToRGB(*img)
 			if err != nil {
 				common.Log.Error("Error converting image to rgb: %v", err)

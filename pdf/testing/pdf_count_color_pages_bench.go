@@ -1037,7 +1037,7 @@ func patternsToPaths(patternList []string) ([]string, error) {
 		}
 		for _, path := range files {
 			if !regularFile(path) {
-				fmt.Fprintf(os.Stderr, "Not a regular file. %#q\n", path)
+				fmt.Printf("Not a regular file. %#q\n", path)
 				continue
 			}
 			pathList = append(pathList, path)

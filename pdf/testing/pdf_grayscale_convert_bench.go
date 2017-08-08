@@ -1,32 +1,30 @@
 /*
  * Transform all content streams in all pages in a list of pdf files.
  *
- * The grayscale transform
- *	- converts PDF files into our internal representation
- *	- transforms the internal representation to grayscale
- *	- converts the internal representation back to a PDF file
- *	- checks that the output PDF file is grayscale
- *
- * Run as: go run pdf_grayscale_bench -o output [-d] [-t] testdata/*.pdf > blah
+ * Run as: go run pdf_grayscale_bench -g output [-d][-k][-a] testdata/*.pdf > blah
  *
  * This will transform all .pdf file in testdata and write the results to output.
- * The main results are written to stderr so you will see them in your console.
- * Detailed information is written to stdout and you will see them in blah.
  *
- *  See the other command line options in the top of main()
+ * See the other command line options in the top of main()
  *      -o processDir - Temporary processing directory (default compare.pdfs)
  *      -d: Debug level logging
  *      -a: Keep converting PDF files after failures
  *      -min <val>: Minimum PDF file size to test
  *      -max <val>: Maximum PDF file size to test
  *      -r <name>: Name of results file
+ *
+ * The grayscale transform
+ *	- converts PDF files into our internal representation
+ *	- transforms the internal representation to grayscale
+ *	- converts the internal representation back to a PDF file
+ *	- checks that the output PDF file is grayscale
+ *
  */
 
 package main
 
 import (
 	"bytes"
-	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,7 +32,6 @@ import (
 	"image/color"
 	"image/png"
 	"io"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
@@ -55,8 +52,10 @@ import (
 )
 
 const usage = `Usage:
-pdf_grayscale_branch -o <output directory> [-d][-g][-k][-a][-min <val>][-max <val>] <file1> <file2> ...
--o processDir - Temporary processing directory (default compare.pdfs)
+pdf_grayscale_branch -g <output directory> [-r <results>][-d][-k][-a][-min <val>][-max <val>] <file1> <file2> ...
+-g <outputDir> - Converted grayscale PDFs are written to outputDir
+-r <resultsPath> - Results are written to resultsPath
+-o <processDir> - Temporary processing directory (default compare.pdfs)
 -d: Debug level logging
 -a: Keep converting PDF files after failures
 -min <val>: Minimum PDF file size to test
@@ -85,28 +84,15 @@ type imageThreshold struct {
 	mean       float64 // Max mean difference on scale 0..255 for pixels that differ
 }
 
-// identityThreshold is the imageThreshold for identity transforms in this program.
-var identityThreshold = imageThreshold{
-	fracPixels: 1.0e-4, // Fraction of pixels in page raster that may differ
-	mean:       10.0,   // Max mean difference on scale 0..255 for pixels that differ
-}
-
-var testStats = statistics{
-	enabled:        true,
-	testResultPath: "xform.test.results.csv",
-}
-
-var allOpCounts = map[string]int{}
-
 func main() {
 	debug := false       // Write debug level info to stdout?
 	runAllTests := false // Don't stop when a PDF file fails to process?
 	compRoot := ""
 	var minSize int64 = -1 // Minimum size for an input PDF to be processed
 	var maxSize int64 = -1 // Maximum size for an input PDF to be processed
+	results := ""          // Results are written here
 	outputDir := ""        // Transformed PDFs are written here
-
-	keep := false // Keep the rasters used for PDF comparison
+	keep := false          // Keep the rasters used for PDF comparison
 
 	flag.BoolVar(&debug, "d", false, "Enable debug logging")
 	flag.BoolVar(&runAllTests, "a", false, "Run all tests. Don't stop at first failure")
@@ -114,6 +100,7 @@ func main() {
 	flag.Int64Var(&minSize, "min", -1, "Minimum size of files to process (bytes)")
 	flag.Int64Var(&maxSize, "max", -1, "Maximum size of files to process (bytes)")
 	flag.StringVar(&outputDir, "g", "", "Output directory")
+	flag.StringVar(&results, "r", "", "Results file")
 	flag.BoolVar(&keep, "k", false, "Keep the rasters used for PDF comparison")
 
 	flag.Parse()
@@ -131,6 +118,16 @@ func main() {
 	}
 	defer removeDir(compDir)
 
+	writers := []io.Writer{os.Stdout}
+	if len(results) > 0 {
+		f, err := os.OpenFile(results, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0777)
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+		writers = append(writers, f)
+	}
+
 	err := os.MkdirAll(outputDir, 0777)
 	if err != nil {
 		common.Log.Error("MkdirAll failed. outputDir=%#q err=%v", outputDir, err)
@@ -143,81 +140,88 @@ func main() {
 		os.Exit(1)
 	}
 	pdfList = sortFiles(pdfList, minSize, maxSize)
+	passFiles := []string{}
 	badFiles := []string{}
 	failFiles := []string{}
-
-	if err = testStats.load(); err != nil {
-		common.Log.Error("stats.load failed. testStats=%+v err=%v", testStats, err)
-		os.Exit(1)
-	}
-	defer testStats._save()
 
 	for idx, inputPath := range pdfList {
 
 		_, name := filepath.Split(inputPath)
 		inputSize := fileSize(inputPath)
 
-		fmt.Fprintf(os.Stderr, "%3d of %d %#-30q  (%6d->", idx,
-			len(pdfList), name, inputSize)
+		report(writers, "%3d of %d %#-30q  (%6d->", idx, len(pdfList), name, inputSize)
 		outputPath := modifyPath(inputPath, outputDir)
 
 		t0 := time.Now()
+		result := "pass"
+
 		numPages, err := transformPdfFile(inputPath, outputPath)
 		dt := time.Since(t0)
 		if err != nil {
 			common.Log.Error("transformPdfFile failed. err=%v", err)
 			failFiles = append(failFiles, inputPath)
-			if runAllTests {
-				continue
-			}
-			os.Exit(1)
+			result = "bad"
 		}
 
-		outputSize := fileSize(outputPath)
-		fmt.Fprintf(os.Stderr, "%6d %3d%%) %d pages %.3f sec => %#q\n",
-			outputSize, int(float64(outputSize)/float64(inputSize)*100.0+0.5),
-			numPages, dt.Seconds(), outputPath)
+		if result == "pass" {
+			outputSize := fileSize(outputPath)
+			report(writers, "%6d %3d%%) %d pages %.3f sec => %#q",
+				outputSize, int(float64(outputSize)/float64(inputSize)*100.0+0.5),
+				numPages, dt.Seconds(), outputPath)
 
-		err = runPdfToPs(outputPath, compDir)
-		if err != nil {
-			common.Log.Error("Transform has damaged PDF. err=%v\n\tinputPath=%#q\n\toutputPath=%#q",
-				err, inputPath, outputPath)
-
-			failFiles = append(failFiles, inputPath)
-			if runAllTests {
-				continue
-			}
-			os.Exit(1)
-		}
-
-		isColorOut, colorPagesOut, err := isPdfColor(outputPath, compDir, true, keep)
-
-		if err != nil || isColorOut {
+			err = runPdfToPs(outputPath, compDir)
 			if err != nil {
 				common.Log.Error("Transform has damaged PDF. err=%v\n\tinputPath=%#q\n\toutputPath=%#q",
 					err, inputPath, outputPath)
-			} else {
-				common.Log.Error("isPdfColor: %d Color pages", len(colorPagesOut))
+				result = "fail"
 			}
+		}
+
+		if result == "pass" {
+			isColorOut, colorPagesOut, err := isPdfColor(outputPath, compDir, true, keep)
+
+			if err != nil || isColorOut {
+				if err != nil {
+					common.Log.Error("Transform has damaged PDF. err=%v\n\tinputPath=%#q\n\toutputPath=%#q",
+						err, inputPath, outputPath)
+				} else {
+					common.Log.Error("isPdfColor: %d Color pages", len(colorPagesOut))
+				}
+				result = "fail"
+			}
+		}
+		report(writers, ", %s\n", result)
+
+		switch result {
+		case "pass":
+			passFiles = append(passFiles, inputPath)
+		case "fail":
 			failFiles = append(failFiles, inputPath)
+		case "bad":
+			badFiles = append(badFiles, inputPath)
+		}
+
+		if result != "pass" {
 			if runAllTests {
 				continue
 			}
-			os.Exit(1)
+			break
 		}
-
 	}
 
-	fmt.Fprintf(os.Stderr, "%d files %d bad %d failed\n", len(pdfList), len(badFiles), len(failFiles))
-	fmt.Fprintf(os.Stderr, "%d bad\n", len(badFiles))
+	report(writers, "%d files %d bad %d pass %d fail\n", len(pdfList), len(badFiles), len(passFiles), len(failFiles))
+	report(writers, "%d bad\n", len(badFiles))
 	for i, path := range badFiles {
-		fmt.Fprintf(os.Stderr, "%3d %#q\n", i, path)
+		report(writers, "%3d %#q\n", i, path)
 	}
-	fmt.Fprintf(os.Stderr, "%d fail\n", len(failFiles))
+	report(writers, "%d pass\n", len(passFiles))
+	for i, path := range passFiles {
+		report(writers, "%3d %#q\n", i, path)
+	}
+	report(writers, "%d fail\n", len(failFiles))
 	for i, path := range failFiles {
-		fmt.Fprintf(os.Stderr, "%3d %#q\n", i, path)
+		report(writers, "%3d %#q\n", i, path)
 	}
-
 }
 
 type ObjCounts struct {
@@ -423,7 +427,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 					if patternColor.Color != nil {
 						color, err := gs.ColorspaceStroking.ColorToRGB(patternColor.Color)
 						if err != nil {
-							fmt.Printf("Error: %v\n", err)
+							common.Log.Error("err=%v", err)
 							return err
 						}
 						rgbColor := color.(*pdf.PdfColorDeviceRGB)
@@ -458,7 +462,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 				} else {
 					color, err := gs.ColorspaceStroking.ColorToRGB(gs.ColorStroking)
 					if err != nil {
-						fmt.Printf("Error with ColorToRGB: %v\n", err)
+						common.Log.Error("Error with ColorToRGB: %v", err)
 						return err
 					}
 					rgbColor := color.(*pdf.PdfColorDeviceRGB)
@@ -484,7 +488,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 					if patternColor.Color != nil {
 						color, err := gs.ColorspaceNonStroking.ColorToRGB(patternColor.Color)
 						if err != nil {
-							fmt.Printf("Error : %v\n", err)
+							common.Log.Error("err=%v", err)
 							return err
 						}
 						rgbColor := color.(*pdf.PdfColorDeviceRGB)
@@ -518,7 +522,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 				} else {
 					color, err := gs.ColorspaceNonStroking.ColorToRGB(gs.ColorNonStroking)
 					if err != nil {
-						fmt.Printf("Error: %v\n", err)
+						common.Log.Error("err=%v", err)
 						return err
 					}
 					rgbColor := color.(*pdf.PdfColorDeviceRGB)
@@ -534,7 +538,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 			case "RG", "K": // Set RGB or CMYK stroking color.
 				color, err := gs.ColorspaceStroking.ColorToRGB(gs.ColorStroking)
 				if err != nil {
-					fmt.Printf("Error: %v\n", err)
+					common.Log.Error("err=%v", err)
 					return err
 				}
 				rgbColor := color.(*pdf.PdfColorDeviceRGB)
@@ -549,7 +553,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 			case "rg", "k": // Set RGB or CMYK as nonstroking color.
 				color, err := gs.ColorspaceNonStroking.ColorToRGB(gs.ColorNonStroking)
 				if err != nil {
-					fmt.Printf("Error: %v\n", err)
+					common.Log.Error("err=%v", err)
 					return err
 				}
 				rgbColor := color.(*pdf.PdfColorDeviceRGB)
@@ -667,7 +671,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 				// Try again, fail on error.
 				grayInlineImg, err = pdfcontent.NewInlineImageFromImage(grayImage, encoder)
 				if err != nil {
-					fmt.Printf("Error making a new inline image object: %v\n", err)
+					common.Log.Error("Error making a new inline image object: %v", err)
 					return err
 				}
 			}
@@ -746,7 +750,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 				rgbColorSpace := pdf.NewPdfColorspaceDeviceRGB()
 				grayImage, err := rgbColorSpace.ImageToGray(rgbImg)
 				if err != nil {
-					fmt.Printf("Error ImageToGray: %v\n", err)
+					common.Log.Error("Error ImageToGray: %v", err)
 					return err
 				}
 
@@ -767,7 +771,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 					// Try again, fail if error.
 					ximgGray, err = pdf.NewXObjectImageFromImage(&grayImage, nil, encoder)
 					if err != nil {
-						fmt.Printf("Error creating image: %v\n", err)
+						common.Log.Error("Error creating image: %v", err)
 						return err
 					}
 				}
@@ -775,7 +779,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 				// Update the entry.
 				err = resources.SetXObjectImageByName(*name, ximgGray)
 				if err != nil {
-					fmt.Printf("Failed setting x object: %v (%s)\n", err, string(*name))
+					common.Log.Error("Failed setting x object: %v (%s)", err, string(*name))
 					return err
 				}
 			} else if xtype == pdf.XObjectTypeForm {
@@ -784,7 +788,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 				// Go through the XObject Form content stream.
 				xform, err := resources.GetXObjectFormByName(*name)
 				if err != nil {
-					fmt.Printf("Error: %v\n", err)
+					common.Log.Error("err=%v", err)
 					return err
 				}
 
@@ -1033,29 +1037,27 @@ func (x byFile) Less(i, j int) bool {
 	return x[i].path < x[j].path
 }
 
-var (
+const (
 	gsImageFormat  = "doc-%03d.png"
 	gsImagePattern = `doc-(\d+).png$`
-	gsImageRegex   = regexp.MustCompile(gsImagePattern)
 )
+
+var gsImageRegex = regexp.MustCompile(gsImagePattern)
 
 // runGhostscript runs Ghostscript on file `pdf` to create file one png file per page in directory
 // `outputDir`
-func runGhostscript(pdf, outputDir string, grayscale bool) error {
+func runGhostscript(pdf, outputDir string) error {
 	common.Log.Trace("runGhostscript: pdf=%#q outputDir=%#q", pdf, outputDir)
 	outputPath := filepath.Join(outputDir, gsImageFormat)
 	output := fmt.Sprintf("-sOutputFile=%s", outputPath)
-	pngDevices := map[bool]string{
-		false: "png16m",
-		true:  "pnggray",
-	}
+
 	cmd := exec.Command(
 		ghostscriptName(),
 		"-dSAFER",
 		"-dBATCH",
 		"-dNOPAUSE",
 		"-r150",
-		fmt.Sprintf("-sDEVICE=%s", pngDevices[grayscale]),
+		fmt.Sprintf("-sDEVICE=png16m"),
 		"-dTextAlphaBits=1",
 		"-dGraphicsAlphaBits=1",
 		output,
@@ -1099,122 +1101,6 @@ func runPdfToPs(pdf, outputDir string) error {
 	return err
 }
 
-// directoriesEqual compares image files that match `mask` in directories `dir1` and `dir2` and
-// returns true if they are the same within `threshold`.
-func directoriesEqual(mask, dir1, dir2 string, threshold imageThreshold) (bool, error) {
-	pattern1 := filepath.Join(dir1, mask)
-	pattern2 := filepath.Join(dir2, mask)
-	files1, err := filepath.Glob(pattern1)
-	if err != nil {
-		panic(err)
-	}
-	files2, err := filepath.Glob(pattern2)
-	if err != nil {
-		panic(err)
-	}
-	if len(files1) != len(files2) {
-		return false, nil
-	}
-	n := len(files1)
-	for i := 0; i < n; i++ {
-		equal, err := filesEqual(files1[i], files2[i], threshold)
-		if !equal || err != nil {
-			return equal, err
-		}
-	}
-	return true, nil
-}
-
-// filesEqual compares files `path1` and `path2` and returns true if they are the same within
-// `threshold`
-func filesEqual(path1, path2 string, threshold imageThreshold) (bool, error) {
-	equal, err := filesBinaryEqual(path1, path2)
-	if equal || err != nil {
-		return equal, err
-	}
-	return imagesEqual(path1, path2, threshold)
-}
-
-// filesBinaryEqual compares files `path1` and `path2` and returns true if they are identical.
-func filesBinaryEqual(path1, path2 string) (bool, error) {
-	f1, err := ioutil.ReadFile(path1)
-	if err != nil {
-		panic(err)
-	}
-	f2, err := ioutil.ReadFile(path2)
-	if err != nil {
-		panic(err)
-	}
-	return bytes.Equal(f1, f2), nil
-}
-
-// imagesEqual compares files `path1` and `path2` and returns true if they are the same within
-// `threshold`
-func imagesEqual(path1, path2 string, threshold imageThreshold) (bool, error) {
-	img1, err := readImage(path1)
-	if err != nil {
-		return false, err
-	}
-	img2, err := readImage(path2)
-	if err != nil {
-		return false, err
-	}
-
-	w1, h1 := img1.Bounds().Max.X, img1.Bounds().Max.Y
-	w2, h2 := img2.Bounds().Max.X, img2.Bounds().Max.Y
-	if w1 != w2 || h1 != h2 {
-		common.Log.Error("compareImages: Different dimensions. img1=%dx%d img2=%dx%d",
-			w1, h1, w2, h2)
-		return false, nil
-	}
-
-	// `different` contains the grayscale distance (scale 0...255) between pixels in img1 and
-	// img2 for pixels that differ between the two images
-	different := []float64{}
-	for x := 0; x < w1; x++ {
-		for y := 0; y < h1; y++ {
-			r1, g1, b1, _ := img1.At(x, y).RGBA()
-			r2, g2, b2, _ := img2.At(x, y).RGBA()
-			if r1 != r2 || g1 != g2 || b1 != b2 {
-				d1, d2, d3 := float64(r1)-float64(r2), float64(g1)-float64(g2), float64(b1)-float64(b2)
-				// Euclidean distance between pixels in rgb space with scale 0..0xffff
-				distance := math.Sqrt(d1*d1 + d2*d2 + d3*d3)
-				// Convert scale to 0..0xff and take average of r,g,b values to get grayscale value
-				distance = distance / float64(0xffff) * float64(0xff) / 3.0
-				different = append(different, distance)
-			}
-		}
-	}
-	if len(different) == 0 {
-		return true, nil
-	}
-
-	fracPixels := float64(len(different)) / float64(w1*h1)
-	mean := meanFloatSlice(different)
-	equal := fracPixels <= threshold.fracPixels && mean <= threshold.mean
-
-	n := len(different)
-	if n > 10 {
-		n = 10
-	}
-	common.Log.Error("compareImages: Different pixels. different=%d/(%dx%d)=%e mean=%.1f %.0f",
-		len(different), w1, h1, fracPixels, mean, different[:n])
-
-	return equal, nil
-}
-
-// meanFloatSlice returns the mean of the elements of `vals`
-func meanFloatSlice(vals []float64) float64 {
-	if len(vals) == 0 {
-		return 0.0
-	}
-	var total float64 = 0.0
-	for _, v := range vals {
-		total += v
-	}
-	return total / float64(len(vals))
-}
-
 // isPdfColor returns true if PDF files `path` has color marks on any page
 // If `keep` is true then the page rasters are retained
 func isPdfColor(path, temp string, showPages, keep bool) (bool, []int, error) {
@@ -1227,7 +1113,7 @@ func isPdfColor(path, temp string, showPages, keep bool) (bool, []int, error) {
 		defer removeDir(dir)
 	}
 
-	err = runGhostscript(path, dir, false)
+	err = runGhostscript(path, dir)
 	if err != nil {
 		return false, nil, err
 	}
@@ -1281,16 +1167,13 @@ func colorDirectoryPages(mask, dir string, keep bool) ([]int, error) {
 			panic(err)
 			return colorPages, err
 		}
-		// common.Log.Error("isColorDirectory:  path=%#q", path)
 		isColor, err := isColorImage(path, keep)
-		// common.Log.Error("isColorDirectory: isColor=%t path=%#q", isColor, path)
 		if err != nil {
 			panic(err)
 			return colorPages, err
 		}
 		if isColor {
 			colorPages = append(colorPages, pageNum)
-			// common.Log.Error("isColorDirectory: colorPages=%d %d", len(colorPages), colorPages)
 		}
 	}
 	return colorPages, nil
@@ -1312,24 +1195,21 @@ func isColorImage(path string, keep bool) (bool, error) {
 	return isColor, err
 }
 
-const colorThreshold = 5.0
+const F = 255.0 / float64(0xFFFF)
+
+// colorThreshold is the min difference of r,g,b values for which a pixel is considered to be color
+// Color components are in range 0-0xFFFF
+// We make this 5 on a 0-255 scale as a guess
+const colorThreshold = 5.0 // / F
 
 // imgIsColor returns true if image `img` contains color
 func imgIsColor(img image.Image) bool {
 	w, h := img.Bounds().Max.X, img.Bounds().Max.Y
 	for x := 0; x < w; x++ {
 		for y := 0; y < h; y++ {
-			r, g, b, _ := img.At(x, y).RGBA()
-			rg := int(r) - int(g)
-			gb := int(g) - int(b)
-			if rg < 0 {
-				rg = -rg
-			}
-			if gb < 0 {
-				gb = -gb
-			}
-			rgb := float64(rg+gb) / float64(0xFFFF) * float64(0xFF)
-			if rgb > colorThreshold {
+			rr, gg, bb, _ := img.At(x, y).RGBA()
+			r, g, b := float64(rr)*F, float64(gg)*F, float64(bb)*F
+			if math.Abs(r-g) > colorThreshold || math.Abs(r-b) > colorThreshold || math.Abs(g-b) > colorThreshold {
 				return true
 			}
 		}
@@ -1345,19 +1225,11 @@ func imgMarkColor(imgIn image.Image) (image.Image, string) {
 	data := []float64{}
 	for x := 0; x < w; x++ {
 		for y := 0; y < h; y++ {
-			r, g, b, _ := imgIn.At(x, y).RGBA()
-			rg := int(r) - int(g)
-			gb := int(g) - int(b)
-			if rg < 0 {
-				rg = -rg
-			}
-			if gb < 0 {
-				gb = -gb
-			}
-			rgb := float64(rg+gb) / float64(0xFFFF) * float64(0xFF)
-			if rgb > colorThreshold {
+			rr, gg, bb, _ := img.At(x, y).RGBA()
+			r, g, b := float64(rr)*F, float64(gg)*F, float64(bb)*F
+			if math.Abs(r-g) > colorThreshold || math.Abs(r-b) > colorThreshold || math.Abs(g-b) > colorThreshold {
 				img.Set(x, y, black)
-				data = append(data, rgb)
+				data = append(data, math.Abs(r-g)+math.Abs(r-b)+math.Abs(g-b))
 			}
 		}
 	}
@@ -1446,7 +1318,7 @@ func patternsToPaths(patternList []string) ([]string, error) {
 		}
 		for _, path := range files {
 			if !regularFile(path) {
-				fmt.Fprintf(os.Stderr, "Not a regular file. %#q\n", path)
+				fmt.Printf("Not a regular file. %#q\n", path)
 				continue
 			}
 			pathList = append(pathList, path)
@@ -1473,157 +1345,17 @@ func fileSize(path string) int64 {
 	return fi.Size()
 }
 
-type statistics struct {
-	enabled        bool
-	testResultPath string
-	imageInfoPath  string
-	testResultList []testResult
-	testResultMap  map[string]int
-}
-
-func (s *statistics) load() error {
-	if !s.enabled {
-		return nil
-	}
-	s.testResultList = []testResult{}
-	s.testResultMap = map[string]int{}
-
-	testResultList, err := testResultRead(s.testResultPath)
-	if err != nil {
-		return err
-	}
-	for _, e := range testResultList {
-		s.addTestResult(e, true)
-	}
-
-	return nil
-}
-
-func (s *statistics) _save() error {
-	if !s.enabled {
-		return nil
-	}
-	return testResultWrite(s.testResultPath, s.testResultList)
-}
-
-func (s *statistics) addTestResult(e testResult, force bool) {
-	if !s.enabled {
-		return
-	}
-	i, ok := s.testResultMap[e.name]
-	if !ok {
-		s.testResultList = append(s.testResultList, e)
-		s.testResultMap[e.name] = len(s.testResultList) - 1
-	} else {
-		s.testResultList[i] = e
-	}
-	if force {
-		s._save()
-	}
-}
-
-type testResult struct {
-	name     string
-	colorIn  bool
-	colorOut bool
-	numPages int
-	duration float64
-	xobjImg  int
-	xobjForm int
-}
-
-func testResultRead(path string) ([]testResult, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return []testResult{}, nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	r := csv.NewReader(f)
-
-	results := []testResult{}
-	for i := 0; ; i++ {
-		row, err := r.Read()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			common.Log.Error("testResultRead: i=%d err=%v", i, err)
-			return results, err
-		}
-		if i == 0 {
-			continue
-		}
-		e := testResult{
-			name:     row[0],
-			colorIn:  toBool(row[1]),
-			colorOut: toBool(row[2]),
-			numPages: toInt(row[3]),
-			duration: toFloat(row[4]),
-			xobjImg:  toInt(row[5]),
-			xobjForm: toInt(row[6]),
-		}
-		results = append(results, e)
-	}
-	return results, nil
-}
-
-func testResultWrite(path string, results []testResult) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0777)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-
-	if err := w.Write([]string{"name", "colorIn", "colorOut", "numPages", "duration",
-		"imageXobj", "formXobj"}); err != nil {
-		return err
-	}
-	for i, e := range results {
-		row := []string{
-			e.name,
-			fmt.Sprintf("%t", e.colorIn),
-			fmt.Sprintf("%t", e.colorOut),
-			fmt.Sprintf("%d", e.numPages),
-			fmt.Sprintf("%.3f", e.duration),
-			fmt.Sprintf("%d", e.xobjImg),
-			fmt.Sprintf("%d", e.xobjForm),
-		}
-		if err := w.Write(row); err != nil {
-			common.Log.Error("testResultWrite: Error writing record. i=%d path=%#q err=%v",
-				i, path, err)
-		}
-	}
-
-	w.Flush()
-	return w.Error()
-}
-
-func toBool(s string) bool {
-	return strings.ToLower(strings.TrimSpace(s)) == "true"
-}
-
-func toInt(s string) int {
-	s = strings.TrimSpace(s)
-	x, err := strconv.Atoi(s)
-	if err != nil {
-		panic(err)
-	}
-	return x
-}
-
-func toFloat(s string) float64 {
-	s = strings.TrimSpace(s)
-	x, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		panic(err)
-	}
-	return x
-}
-
 func changeDir(path, dir string) string {
 	_, name := filepath.Split(path)
 	return filepath.Join(dir, name)
+}
+
+// report writes Sprintf formatted `format` ... to all writers in `writers`
+func report(writers []io.Writer, format string, a ...interface{}) {
+	msg := fmt.Sprintf(format, a...)
+	for _, w := range writers {
+		if _, err := io.WriteString(w, msg); err != nil {
+			common.Log.Error("report: write to %#v failed msg=%s err=%v", w, msg, err)
+		}
+	}
 }

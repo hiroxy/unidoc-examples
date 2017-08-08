@@ -2,10 +2,7 @@
  * Detect the number of pages and the color pages (1-offset) all pages in a list of PDF files.
  * Compares these results to running Ghostscript on the PDF files and reports an error if the results don't match.
  *
- * Run as: ./pdf_count_color_pages_bench [-o processDir] [-d] [-a] testdata/*.pdf > blah
- *
- * The main results are written to stderr so you will see them in your console.
- * Detailed information is written to stdout and you will see them in blah.
+ * Run as: go run pdf_count_color_pages_bench [-o processDir] [-d][-a] testdata/*.pdf
  *
  *  See the other command line options in the top of main()
  *      -o processDir - Temporary processing directory (default compare.pdfs)
@@ -43,13 +40,14 @@ import (
 )
 
 const usage = `Usage:
-pdf_count_color_pages_bench [-o <processDir>] [-d][-a][-min <val>][-max <val>] <file1> <file2> ...
--o processDir - Temporary processing directory (default compare.pdfs)
+pdf_count_color_pages_bench [-r <results>][-o <processDir>][-d][-a][-min <val>][-max <val>] <file1> <file2> ...
+-r <resultsPath> - Results are written to resultsPath
+-o <processDir> - Temporary processing directory (default compare.pdfs)
 -d: Debug level logging
 -a: Keep converting PDF files after failures
 -min <val>: Minimum PDF file size to test
 -max <val>: Maximum PDF file size to test
--r <name>: Name of results file
+-s: Strict logging. Panic on error
 `
 
 func initUniDoc(debug bool) {
@@ -97,7 +95,7 @@ func main() {
 	fmt.Printf("compDir=%#q\n", compDir)
 	defer removeDir(compDir)
 
-	writers := []io.Writer{os.Stderr}
+	writers := []io.Writer{os.Stdout}
 	if len(results) > 0 {
 		f, err := os.OpenFile(results, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0777)
 		if err != nil {
@@ -639,7 +637,7 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 				// Go through the XObject Form content stream.
 				xform, err := resources.GetXObjectFormByName(*name)
 				if err != nil {
-					fmt.Printf("Error : %v\n", err)
+					common.Log.Error("err=%v", err)
 					return err
 				}
 
@@ -790,16 +788,6 @@ func visible(cpts ...float64) bool {
 		}
 	}
 	return false
-}
-
-// report writes Sprintf formatted `format` ... to all writers in `writers`
-func report(writers []io.Writer, format string, a ...interface{}) {
-	msg := fmt.Sprintf(format, a...)
-	for _, w := range writers {
-		if _, err := io.WriteString(w, msg); err != nil {
-			common.Log.Error("report: write to %#v failed msg=%s err=%v", w, msg, err)
-		}
-	}
 }
 
 // equalSlices returns true if `a` and `b` are identical
@@ -990,7 +978,6 @@ func imgIsColor(img image.Image) bool {
 			rr, gg, bb, _ := img.At(x, y).RGBA()
 			r, g, b := float64(rr)*F, float64(gg)*F, float64(bb)*F
 			if math.Abs(r-g) > colorThreshold || math.Abs(r-b) > colorThreshold || math.Abs(g-b) > colorThreshold {
-				// fmt.Printf("@@@ xy=%d %d rgb=%.3f %.3f %.3f =%.3f %.3f %.3f\n", x, y, r, g, b, r-g, r-b, g-b)
 				return true
 			}
 		}
@@ -1100,4 +1087,14 @@ func contains(s []int, e int) bool {
 		}
 	}
 	return false
+}
+
+// report writes Sprintf formatted `format` ... to all writers in `writers`
+func report(writers []io.Writer, format string, a ...interface{}) {
+	msg := fmt.Sprintf(format, a...)
+	for _, w := range writers {
+		if _, err := io.WriteString(w, msg); err != nil {
+			common.Log.Error("report: write to %#v failed msg=%s err=%v", w, msg, err)
+		}
+	}
 }

@@ -1,7 +1,7 @@
 /*
  * Transform all content streams in all pages in a list of pdf files.
  *
- * Run as: go run pdf_grayscale_bench -g output [-d][-k][-a] testdata/*.pdf > blah
+ * Run as: go run pdf_grayscale_convert_bench -g output [-d][-k][-a] testdata/*.pdf > blah
  *
  * This will transform all .pdf file in testdata and write the results to output.
  *
@@ -19,6 +19,11 @@
  *	- converts the internal representation back to a PDF file
  *	- checks that the output PDF file is grayscale
  *
+ * Meanings:
+ * pass - Successfully converted PDF grayscale
+ * fail - Failed for any reason
+ * bad - Grayscale conversion process failed
+ * bad + pass+fail should equal total files.
  */
 
 package main
@@ -52,7 +57,7 @@ import (
 )
 
 const usage = `Usage:
-pdf_grayscale_branch -g <output directory> [-r <results>][-d][-k][-a][-min <val>][-max <val>] <file1> <file2> ...
+pdf_grayscale_convert_bench -g <output directory> [-r <results>][-d][-k][-a][-min <val>][-max <val>] <file1> <file2> ...
 -g <outputDir> - Converted grayscale PDFs are written to outputDir
 -r <resultsPath> - Results are written to resultsPath
 -o <processDir> - Temporary processing directory (default compare.pdfs)
@@ -64,13 +69,8 @@ pdf_grayscale_branch -g <output directory> [-r <results>][-d][-k][-a][-min <val>
 `
 
 func initUniDoc(debug bool) {
+	pdf.SetPdfCreator("pdf_grayscale_convert_bench test suite")
 
-	pdf.SetPdfCreator("Peter Williams")
-
-	// To make the library log we just have to initialise the logger which satisfies
-	// the common.Logger interface, common.DummyLogger is the default and
-	// does not do anything. Very easy to implement your own.
-	// common.SetLogger(common.DummyLogger{})
 	logLevel := common.LogLevelInfo
 	if debug {
 		logLevel = common.LogLevelDebug
@@ -144,6 +144,11 @@ func main() {
 	badFiles := []string{}
 	failFiles := []string{}
 
+	failErrors := []string{}
+	passTotalTime := float64(0)
+
+	startT := time.Now()
+
 	for idx, inputPath := range pdfList {
 
 		_, name := filepath.Split(inputPath)
@@ -155,14 +160,20 @@ func main() {
 		t0 := time.Now()
 		result := "pass"
 
+		// 1. Transforms the pdf to grayscale pdf.
 		numPages, err := transformPdfFile(inputPath, outputPath)
 		dt := time.Since(t0)
 		if err != nil {
 			common.Log.Error("transformPdfFile failed. err=%v", err)
 			failFiles = append(failFiles, inputPath)
+			failErrors = append(failErrors, fmt.Sprintf("%v", err))
 			result = "bad"
 		}
 
+		// Reason for failure.
+		errStr := ""
+
+		// 2. Runs pdftops on the transformed file to validate if OK.
 		if result == "pass" {
 			outputSize := fileSize(outputPath)
 			report(writers, "%6d %3d%%) %d pages %.3f sec => %#q",
@@ -174,9 +185,12 @@ func main() {
 				common.Log.Error("Transform has damaged PDF. err=%v\n\tinputPath=%#q\n\toutputPath=%#q",
 					err, inputPath, outputPath)
 				result = "fail"
+
+				errStr = "Transform -> damaged PDF"
 			}
 		}
 
+		// 3. Checks if the transformed PDF has color pixels.
 		if result == "pass" {
 			isColorOut, colorPagesOut, err := isPdfColor(outputPath, compDir, true, keep)
 
@@ -184,8 +198,10 @@ func main() {
 				if err != nil {
 					common.Log.Error("Transform has damaged PDF. err=%v\n\tinputPath=%#q\n\toutputPath=%#q",
 						err, inputPath, outputPath)
+					errStr = fmt.Sprintf("isPdfColor check failed: %v", err)
 				} else {
 					common.Log.Error("isPdfColor: %d Color pages", len(colorPagesOut))
+					errStr = fmt.Sprintf("color fail: %d color pages / %d total", len(colorPagesOut), numPages)
 				}
 				result = "fail"
 			}
@@ -195,8 +211,11 @@ func main() {
 		switch result {
 		case "pass":
 			passFiles = append(passFiles, inputPath)
+			passTotalTime += dt.Seconds()
 		case "fail":
+			// Fail here means that it does not have color pixels.
 			failFiles = append(failFiles, inputPath)
+			failErrors = append(failErrors, errStr)
 		case "bad":
 			badFiles = append(badFiles, inputPath)
 		}
@@ -209,7 +228,15 @@ func main() {
 		}
 	}
 
+	totalDur := time.Since(startT)
+
 	report(writers, "%d files %d bad %d pass %d fail\n", len(pdfList), len(badFiles), len(passFiles), len(failFiles))
+	report(writers, "total duration (everything): %.0f seconds\n", totalDur.Seconds())
+	if len(passFiles) > 0 {
+		avgTime := passTotalTime / float64(len(passFiles))
+		report(writers, "total processing time (pass only): %.0f seconds (%.2f sec per file)\n", passTotalTime, avgTime)
+	}
+
 	report(writers, "%d bad\n", len(badFiles))
 	for i, path := range badFiles {
 		report(writers, "%3d %#q\n", i, path)
@@ -220,7 +247,7 @@ func main() {
 	}
 	report(writers, "%d fail\n", len(failFiles))
 	for i, path := range failFiles {
-		report(writers, "%3d %#q\n", i, path)
+		report(writers, "%3d %#q - %s\n", i, path, failErrors[i])
 	}
 }
 

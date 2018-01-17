@@ -574,7 +574,7 @@ func isPatternColored(pattern *pdf.PdfPattern, debug bool) (bool, error) {
 		tilingPattern := pattern.GetAsTilingPattern()
 		if tilingPattern.IsColored() {
 			// A colored tiling pattern can use color operators in its stream, need to process the stream.
-			content, err := tilingPattern.GetContentStream()
+			content, _, err := tilingPattern.GetContentStream()
 			if err != nil {
 				return false, err
 			}

@@ -31,6 +31,8 @@ pdf_page_summaries <file>
 -d: Debug level logging
 `
 
+var globalDebug = true
+
 func initUniDoc(debug bool) {
 	logLevel := common.LogLevelInfo
 	if debug {
@@ -43,6 +45,7 @@ func main() {
 	debug := false // Write debug level info to stdout?
 
 	flag.BoolVar(&debug, "d", false, "Enable debug logging")
+	flag.BoolVar(&globalDebug, "e", false, "Enable detailed debug logging")
 	flag.Parse()
 	args := flag.Args()
 	if len(args) != 1 {
@@ -55,11 +58,11 @@ func main() {
 	inputPath := args[0]
 
 	if !regularFile(inputPath) {
-		common.Log.Error("Not a regular file. %#q\n", inputPath)
+		common.Log.Error("Not a regular file. %#q", inputPath)
 		os.Exit(1)
 	}
 
-	numPages, colorPages, width, height, err := describePdfPages(inputPath)
+	numPages, markedPages, width, height, err := describePdfPages(inputPath)
 	if err != nil {
 		common.Log.Error("describePdfPages failed. err=%v", err)
 		os.Exit(1)
@@ -70,10 +73,10 @@ func main() {
 	}
 
 	err = writeSummary(Summary{
-		NumPages:   numPages,
-		Width:      width,
-		Height:     height,
-		ColorPages: colorPages,
+		NumPages:    numPages,
+		Width:       width,
+		Height:      height,
+		MarkedPages: markedPages,
 	})
 	if err != nil {
 		common.Log.Error("describePdfPages failed. err=%v", err)
@@ -81,7 +84,7 @@ func main() {
 	}
 }
 
-// describePdfPages reads PDF `inputPath` and returns number of pages, slice of color page numbers (1-offset)
+// describePdfPages reads PDF `inputPath` and returns number of pages, slice of marked page numbers (1-offset)
 func describePdfPages(inputPath string) (int, []int, float64, float64, error) {
 
 	f, err := os.Open(inputPath)
@@ -111,7 +114,7 @@ func describePdfPages(inputPath string) (int, []int, float64, float64, error) {
 		return numPages, []int{}, 0.0, 0.0, err
 	}
 
-	colorPages := []int{}
+	markedPages := []int{}
 	var width, height float64
 
 	for i := 0; i < numPages; i++ {
@@ -128,16 +131,16 @@ func describePdfPages(inputPath string) (int, []int, float64, float64, error) {
 		}
 
 		desc := fmt.Sprintf("%s:page%d", filepath.Base(inputPath), pageNum)
-		marked, err := isPageMarked(page, desc, false)
+		marked, err := isPageMarked(page, desc, globalDebug)
 		if err != nil {
-			return numPages, colorPages, width, height, err
+			return numPages, markedPages, width, height, err
 		}
 		if marked {
-			colorPages = append(colorPages, pageNum)
+			markedPages = append(markedPages, pageNum)
 		}
 	}
 
-	return numPages, colorPages, width, height, nil
+	return numPages, markedPages, width, height, nil
 }
 
 // =================================================================================================
@@ -164,9 +167,8 @@ func isPageMarked(page *pdf.PdfPage, desc string, debug bool) (bool, error) {
 	}
 
 	marked, err := isContentStreamMarked(contents, page.Resources, debug)
-	if debug {
-		common.Log.Info("marked=%t err=%v", marked, err)
-	}
+	common.Log.Debug("marked=%t err=%v", marked, err)
+
 	if err != nil {
 		common.Log.Error("isContentStreamMarked failed. err=%v", err)
 		return false, err
@@ -211,9 +213,7 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 
 					if patternColor.Color != nil {
 						if isColorMarking(patternColor.Color) {
-							if debug {
-								common.Log.Info("op=%s hasMarking=%t", op, true)
-							}
+							common.Log.Debug("op=%s hasMarking=%t", op, true)
 							marked = true
 							return nil
 						}
@@ -222,9 +222,7 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 					if hasMarking, ok := markingPatterns[patternColor.PatternName]; ok {
 						// Already processed, need not change anything, except underlying color if used.
 						if hasMarking {
-							if debug {
-								common.Log.Info("op=%s hasMarking=%t", op, hasMarking)
-							}
+							common.Log.Debug("op=%s hasMarking=%t", op, hasMarking)
 							marked = true
 						}
 						return nil
@@ -242,17 +240,13 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 					}
 					markingPatterns[patternColor.PatternName] = hasMarking
 					marked = marked || hasMarking
-					if debug {
-						common.Log.Info("op=%s hasMarking=%t", op, hasMarking)
-					}
+					common.Log.Debug("op=%s hasMarking=%t", op, hasMarking)
 
 				} else {
 					hasMarking := isColorMarking(gs.ColorStroking)
 					marked = marked || hasMarking
-					if debug {
-						common.Log.Info("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
-							op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
-					}
+					common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
+						op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
 				}
 				return nil
 			case "sc", "scn": // Set non-stroking color.
@@ -267,16 +261,12 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 					if patternColor.Color != nil {
 						hasMarking := isColorMarking(patternColor.Color)
 						marked = marked || hasMarking
-						if debug {
-							common.Log.Info("op=%#v hasMarking=%t", op, hasMarking)
-						}
+						common.Log.Debug("op=%#v hasMarking=%t", op, hasMarking)
 					}
 					if hasMarking, ok := markingPatterns[patternColor.PatternName]; ok {
 						// Already processed, need not change anything, except underlying color if used.
 						marked = marked || hasMarking
-						if debug {
-							common.Log.Info("op=%#v hasMarking=%t", op, hasMarking)
-						}
+						common.Log.Debug("op=%#v hasMarking=%t", op, hasMarking)
 						return nil
 					}
 
@@ -294,28 +284,22 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 				} else {
 					hasMarking := isColorMarking(gs.ColorNonStroking)
 					marked = marked || hasMarking
-					if debug {
-						common.Log.Info("op=%s ColorspaceNonStroking=%T ColorNonStroking=%#v hasMarking=%t",
-							op, gs.ColorspaceNonStroking, gs.ColorNonStroking, hasMarking)
-					}
+					common.Log.Debug("op=%s ColorspaceNonStroking=%T ColorNonStroking=%#v hasMarking=%t",
+						op, gs.ColorspaceNonStroking, gs.ColorNonStroking, hasMarking)
 
 				}
 				return nil
 			case "RG", "K": // Set RGB or CMYK stroking color.
 				hasMarking := isColorMarking(gs.ColorStroking)
-				if debug {
-					common.Log.Info("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
-						op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
-				}
+				common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
+					op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
 				marked = marked || hasMarking
 				return nil
 			case "rg", "k": // Set RGB or CMYK as non-stroking color.
 				hasMarking := isColorMarking(gs.ColorNonStroking)
 				marked = marked || hasMarking
-				if debug {
-					common.Log.Info("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
-						op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
-				}
+				common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
+					op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
 				return nil
 			case "sh": // Paints the shape and color defined by shading dict.
 				if len(op.Params) != 1 {
@@ -330,8 +314,8 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 			return nil
 		})
 
-	// Add handler for image related handling.  Note that inline images are completely stored with a ContentStreamInlineImage
-	// object as the parameter for BI.
+	// Add handler for image related handling.  Note that inline images are completely stored with a
+	// ContentStreamInlineImage object as the parameter for BI.
 	processor.AddHandler(pdfcontent.HandlerConditionEnumOperand, "BI",
 		func(op *pdfcontent.ContentStreamOperation, gs pdfcontent.GraphicsState, resources *pdf.PdfPageResources) error {
 			if marked {
@@ -348,9 +332,7 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 				common.Log.Error("Invalid handling for inline image")
 				return errors.New("Invalid inline image parameter")
 			}
-			if debug {
-				common.Log.Info("iimg=%s", iimg)
-			}
+			common.Log.Debug("iimg=%s", iimg)
 
 			cs, err := iimg.GetColorSpace(resources)
 			if err != nil {
@@ -383,9 +365,7 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 				return err
 			}
 
-			if debug {
-				common.Log.Info("img=%v %d", img.ColorComponents, img.BitsPerComponent)
-			}
+			common.Log.Debug("img=%v %d", img.ColorComponents, img.BitsPerComponent)
 
 			rgbImg, err := cs.ImageToRGB(*img)
 			if err != nil {
@@ -394,9 +374,7 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 			}
 			hasMarking := isRgbImageColored(rgbImg, debug)
 			marked = marked || hasMarking
-			if debug {
-				common.Log.Info("hasMarking=%t", hasMarking)
-			}
+			common.Log.Debug("hasMarking=%t", hasMarking)
 
 			return nil
 		})
@@ -421,7 +399,8 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 
 			// Only process each one once.
 			hasMarking, has := processedXObjects[string(*name)]
-			common.Log.Debug("name=%q has=%t hasMarking=%t processedXObjects=%+v", *name, has, hasMarking, processedXObjects)
+			common.Log.Debug("name=%q has=%t hasMarking=%t processedXObjects=%+v",
+				*name, has, hasMarking, processedXObjects)
 			if has {
 				marked = marked || hasMarking
 				return nil
@@ -437,11 +416,9 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 					common.Log.Error("Error w/GetXObjectImageByName : %v", err)
 					return err
 				}
-				if debug {
-					common.Log.Info("!!Filter=%s ColorSpace=%s ImageMask=%v wxd=%dx%d",
-						ximg.Filter.GetFilterName(), ximg.ColorSpace,
-						ximg.ImageMask, *ximg.Width, *ximg.Height)
-				}
+				common.Log.Debug("!!Filter=%s ColorSpace=%s ImageMask=%v wxd=%dx%d",
+					ximg.Filter.GetFilterName(), ximg.ColorSpace,
+					ximg.ImageMask, *ximg.Width, *ximg.Height)
 				// Ignore gray color spaces
 				if _, isIndexed := ximg.ColorSpace.(*pdf.PdfColorspaceSpecialIndexed); !isIndexed {
 					if ximg.ColorSpace.GetNumComponents() == 1 {
@@ -463,7 +440,6 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 				// Hacky workaround for Szegedy_Going_Deeper_With_2015_CVPR_paper.pdf that has a marked image
 				// that is completely masked
 				if ximg.Filter.GetFilterName() == "RunLengthDecode" && ximg.SMask != nil {
-
 					return nil
 				}
 
@@ -479,18 +455,14 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 					return err
 				}
 
-				if debug {
-					common.Log.Info("img: ColorComponents=%d wxh=%dx%d", img.ColorComponents, img.Width, img.Height)
-					common.Log.Info("ximg: ColorSpace=%T=%s mask=%v", ximg.ColorSpace, ximg.ColorSpace, ximg.Mask)
-					common.Log.Info("rgbImg: ColorComponents=%d wxh=%dx%d", rgbImg.ColorComponents, rgbImg.Width, rgbImg.Height)
-				}
+				common.Log.Debug("img: ColorComponents=%d wxh=%dx%d", img.ColorComponents, img.Width, img.Height)
+				common.Log.Debug("ximg: ColorSpace=%T=%s mask=%v", ximg.ColorSpace, ximg.ColorSpace, ximg.Mask)
+				common.Log.Debug("rgbImg: ColorComponents=%d wxh=%dx%d", rgbImg.ColorComponents, rgbImg.Width, rgbImg.Height)
 
 				hasMarking := isRgbImageColored(rgbImg, debug)
 				processedXObjects[string(*name)] = hasMarking
 				marked = marked || hasMarking
-				if debug {
-					common.Log.Info("hasMarking=%t", hasMarking)
-				}
+				common.Log.Debug("hasMarking=%t", hasMarking)
 
 			} else if xtype == pdf.XObjectTypeForm {
 				common.Log.Debug(" XObject Form: %s", *name)
@@ -509,7 +481,8 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 				}
 
 				// Process the content stream in the Form object too:
-				// XXX/TODO/Consider: Use either form resources (priority) and fall back to page resources alternatively if not found.
+				// XXX/TODO/Consider: Use either form resources (priority) and fall back to page resources alternatively
+				// if not found.
 				// Have not come into cases where needed yet.
 				formResources := xform.Resources
 				if formResources == nil {
@@ -524,9 +497,7 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 				}
 				processedXObjects[string(*name)] = hasMarking
 				marked = marked || hasMarking
-				if debug {
-					common.Log.Info("hasMarking=%t", hasMarking)
-				}
+				common.Log.Debug("hasMarking=%t", hasMarking)
 
 			}
 
@@ -607,12 +578,10 @@ func isRgbImageColored(img pdf.Image, debug bool) bool {
 		r := float64(samples[i]) / maxVal
 		g := float64(samples[i+1]) / maxVal
 		b := float64(samples[i+2]) / maxVal
-		if visible(r-g, r-b, g-b) {
-			if debug {
-				common.Log.Info("@@ marked pixel: i=%d rgb=%.3f %.3f %.3f", i, r, g, b)
-				common.Log.Info("                 delta rgb=%.3f %.3f %.3f", r-g, r-b, g-b)
-				common.Log.Info("            colorTolerance=%.3f", colorTolerance)
-			}
+		if visible(r, g, b) {
+			common.Log.Debug("@@ marked pixel: i=%d rgb=%.3f %.3f %.3f", i, r, g, b)
+			common.Log.Debug("                 delta rgb=%.3f %.3f %.3f", r-g, r-b, g-b)
+			common.Log.Debug("            colorTolerance=%.3f", colorTolerance)
 			return true
 		}
 	}
@@ -621,13 +590,13 @@ func isRgbImageColored(img pdf.Image, debug bool) bool {
 
 // ColorTolerance is the smallest color component that is visible on a typical mid-range color laser printer
 // cpts have values in range 0.0-1.0
-const colorTolerance = 3.1 / 255.0
+const colorTolerance = 1.0 - 3.1/255.0
 
 // visible returns true if any of color component `cpts` is visible on a typical mid-range color laser printer
 // cpts have values in range 0.0-1.0
 func visible(cpts ...float64) bool {
 	for _, x := range cpts {
-		if math.Abs(x) > colorTolerance {
+		if math.Abs(x) < colorTolerance {
 			return true
 		}
 	}
@@ -659,10 +628,10 @@ func regularFile(path string) bool {
 }
 
 type Summary struct {
-	NumPages   int
-	Width      float64
-	Height     float64
-	ColorPages []int
+	NumPages    int
+	Width       float64
+	Height      float64
+	MarkedPages []int
 }
 
 func writeSummary(a Summary) error {

@@ -404,7 +404,7 @@ func imgIsMarked(img image.Image) bool {
 		for y := 0; y < h; y++ {
 			rr, gg, bb, _ := img.At(x, y).RGBA()
 			r, g, b := float64(rr), float64(gg), float64(bb)
-			if math.Abs(r) < visibleThreshold && math.Abs(g) < visibleThreshold && math.Abs(b) < visibleThreshold {
+			if math.Abs(r) < visibleThreshold || math.Abs(g) < visibleThreshold || math.Abs(b) < visibleThreshold {
 				fmt.Printf("$$$$$ %.3f,%.3f,%.3f\n", r, g, b)
 				fmt.Printf("$$$** %+v,%+v,%+v\n", rr, gg, bb)
 				return true

@@ -120,6 +120,7 @@ func describePdfPages(inputPath string) (int, []int, float64, float64, error) {
 	for i := 0; i < numPages; i++ {
 		pageNum := i + 1
 		page := pdfReader.PageList[i]
+		common.Log.Debug("==========================================================")
 		common.Log.Debug("page %d", pageNum)
 
 		w, h, _ := pageSize(page)
@@ -289,13 +290,13 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 
 				}
 				return nil
-			case "RG", "K": // Set RGB or CMYK stroking color.
+			case "G", "RG", "K": // Set Gray, RGB or CMYK stroking color.
 				hasMarking := isColorMarking(gs.ColorStroking)
 				common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
 					op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
 				marked = marked || hasMarking
 				return nil
-			case "rg", "k": // Set RGB or CMYK as non-stroking color.
+			case "g", "rg", "k": // Set Gray, RGB or CMYK as non-stroking color.
 				hasMarking := isColorMarking(gs.ColorNonStroking)
 				marked = marked || hasMarking
 				common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
@@ -541,27 +542,36 @@ func isPatternMarked(pattern *pdf.PdfPattern, debug bool) (bool, error) {
 	return false, nil
 }
 
-// isColorMarking returns true if `color` is visible
 func isColorMarking(color pdf.PdfColor) bool {
+	marking := isColorMarking_(color)
+	common.Log.Debug("isColorMarking: %T %t", color, marking)
+	// if marking {
+	// 	panic("RRRR")
+	// }
+	return marking
+}
+
+// isColorMarking returns true if `color` is visibleAdditive
+func isColorMarking_(color pdf.PdfColor) bool {
 	switch color.(type) {
 	case *pdf.PdfColorDeviceGray:
 		col := color.(*pdf.PdfColorDeviceGray)
-		return visible(col.Val())
+		return visibleAdditive(col.Val())
 	case *pdf.PdfColorDeviceRGB:
 		col := color.(*pdf.PdfColorDeviceRGB)
-		return visible(col.R(), col.G(), col.B())
+		return visibleAdditive(col.R(), col.G(), col.B())
 	case *pdf.PdfColorDeviceCMYK:
 		col := color.(*pdf.PdfColorDeviceCMYK)
-		return visible(col.C(), col.M(), col.Y(), col.K())
+		return visibleSubtractive(col.C(), col.M(), col.Y(), col.K())
 	case *pdf.PdfColorCalGray:
 		col := color.(*pdf.PdfColorCalGray)
-		return visible(col.Val())
+		return visibleAdditive(col.Val())
 	case *pdf.PdfColorCalRGB:
 		col := color.(*pdf.PdfColorCalRGB)
-		return visible(col.A(), col.B(), col.C())
+		return visibleAdditive(col.A(), col.B(), col.C())
 	case *pdf.PdfColorLab:
 		col := color.(*pdf.PdfColorLab)
-		return visible(col.L())
+		return visibleAdditive(col.L())
 	}
 	common.Log.Error("isColorMarking: Unknown color %T %s", color, color)
 	panic("Unknown color type")
@@ -578,10 +588,10 @@ func isRgbImageColored(img pdf.Image, debug bool) bool {
 		r := float64(samples[i]) / maxVal
 		g := float64(samples[i+1]) / maxVal
 		b := float64(samples[i+2]) / maxVal
-		if visible(r, g, b) {
+		if visibleAdditive(r, g, b) {
 			common.Log.Debug("@@ marked pixel: i=%d rgb=%.3f %.3f %.3f", i, r, g, b)
 			common.Log.Debug("                 delta rgb=%.3f %.3f %.3f", r-g, r-b, g-b)
-			common.Log.Debug("            colorTolerance=%.3f", colorTolerance)
+			common.Log.Debug("            additiveZero=%.3f", additiveZero)
 			return true
 		}
 	}
@@ -590,13 +600,25 @@ func isRgbImageColored(img pdf.Image, debug bool) bool {
 
 // ColorTolerance is the smallest color component that is visible on a typical mid-range color laser printer
 // cpts have values in range 0.0-1.0
-const colorTolerance = 1.0 - 3.1/255.0
+const subtractiveZero = 3.1 / 255.0
+const additiveZero = 1.0 - subtractiveZero
 
-// visible returns true if any of color component `cpts` is visible on a typical mid-range color laser printer
+// visibleAdditive returns true if any of color component `cpts` is visible on a typical mid-range color laser printer
 // cpts have values in range 0.0-1.0
-func visible(cpts ...float64) bool {
-	for _, x := range cpts {
-		if math.Abs(x) < colorTolerance {
+func visibleAdditive(cpts ...float64) bool {
+	for i, x := range cpts {
+		if math.Abs(x) < additiveZero {
+			common.Log.Debug("visibleAdditive: i=%d x=%.3f", i, x)
+			return true
+		}
+	}
+	return false
+}
+
+func visibleSubtractive(cpts ...float64) bool {
+	for i, x := range cpts {
+		if math.Abs(x) > subtractiveZero {
+			common.Log.Debug("visibleSubtractive: i=%d x=%.3f", i, x)
 			return true
 		}
 	}

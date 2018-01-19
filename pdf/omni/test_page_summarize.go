@@ -56,6 +56,15 @@ func initUniDoc(debug bool) {
 	common.SetLogger(common.ConsoleLogger{LogLevel: logLevel})
 }
 
+var exclusions = map[string]bool{
+	"/Users/pcadmin/testdata/lines.pdf":                                       true, // white lines
+	"/Users/pcadmin/testdata/lines_over_black.pdf.pdf":                        true, // white lines
+	"/Users/pcadmin/testdata/SeniorDevCodeAssignmentInvitationText-1.0.0.pdf": true, // white lines
+	"/Users/pcadmin/testdata/000025.pdf":                                      true, // white lines
+	"/Users/pcadmin/testdata/symbiosis-provocation.pdf":                       true, // white lines
+	"/Users/pcadmin/testdata/Doc_Test_papercut.pdf":                           true, // empty text [( )] TJ
+}
+
 func main() {
 	fmt.Println("=======================================================================")
 	debug := false            // Write debug level info to stdout?
@@ -98,7 +107,7 @@ func main() {
 		writers = append(writers, f)
 	}
 
-	pdfList, err := patternsToPaths(args)
+	pdfList, err := patternsToPaths(args, exclusions)
 	if err != nil {
 		common.Log.Error("patternsToPaths failed. args=%#q err=%v", args, err)
 		os.Exit(1)
@@ -157,7 +166,7 @@ func main() {
 			badFiles = append(badFiles, inputPath)
 		}
 
-		if result != "pass" {
+		if result == "fail" {
 			if runAllTests {
 				continue
 			}
@@ -405,8 +414,8 @@ func imgIsMarked(img image.Image) bool {
 			rr, gg, bb, _ := img.At(x, y).RGBA()
 			r, g, b := float64(rr), float64(gg), float64(bb)
 			if math.Abs(r) < visibleThreshold || math.Abs(g) < visibleThreshold || math.Abs(b) < visibleThreshold {
-				fmt.Printf("$$$$$ %.3f,%.3f,%.3f\n", r, g, b)
-				fmt.Printf("$$$** %+v,%+v,%+v\n", rr, gg, bb)
+				// fmt.Printf("$$$$$ %.3f,%.3f,%.3f\n", r, g, b)
+				// fmt.Printf("$$$** %+v,%+v,%+v\n", rr, gg, bb)
 				return true
 			}
 		}
@@ -455,7 +464,7 @@ func removeDir(dir string) error {
 }
 
 // patternsToPaths returns a list of files matching the patterns in `patternList`
-func patternsToPaths(patternList []string) ([]string, error) {
+func patternsToPaths(patternList []string, exclusions map[string]bool) ([]string, error) {
 	pathList := []string{}
 	for _, pattern := range patternList {
 		files, err := filepath.Glob(pattern)
@@ -468,7 +477,9 @@ func patternsToPaths(patternList []string) ([]string, error) {
 				fmt.Fprintf(os.Stderr, "Not a regular file. %#q\n", path)
 				continue
 			}
-			pathList = append(pathList, path)
+			if _, ok := exclusions[path]; !ok {
+				pathList = append(pathList, path)
+			}
 		}
 	}
 	return pathList, nil

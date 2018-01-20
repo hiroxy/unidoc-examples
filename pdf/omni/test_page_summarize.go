@@ -57,12 +57,37 @@ func initUniDoc(debug bool) {
 }
 
 var exclusions = map[string]bool{
-	"/Users/pcadmin/testdata/lines.pdf":                                       true, // white lines
-	"/Users/pcadmin/testdata/lines_over_black.pdf.pdf":                        true, // white lines
-	"/Users/pcadmin/testdata/SeniorDevCodeAssignmentInvitationText-1.0.0.pdf": true, // white lines
-	"/Users/pcadmin/testdata/000025.pdf":                                      true, // white lines
-	"/Users/pcadmin/testdata/symbiosis-provocation.pdf":                       true, // white lines
-	"/Users/pcadmin/testdata/Doc_Test_papercut.pdf":                           true, // empty text [( )] TJ
+	"/Users/pcadmin/testdata/lines.pdf":                                              true, // white lines
+	"/Users/pcadmin/testdata/lines_over_black.pdf.pdf":                               true, // white lines
+	"/Users/pcadmin/testdata/SeniorDevCodeAssignmentInvitationText-1.0.0.pdf":        true, // white lines
+	"/Users/pcadmin/testdata/000025.pdf":                                             true, // white lines
+	"/Users/pcadmin/testdata/symbiosis-provocation.pdf":                              true, // white lines
+	"/Users/pcadmin/testdata/Doc_Test_papercut.pdf":                                  true, // empty text [( )] TJ
+	"/Users/pcadmin/testdata/D16-1023.pdf":                                           true, // Ghostscript can't parse pdf
+	"/Users/pcadmin/testdata/VerifiableDataStructures.pdf":                           true, // white lines
+	"/Users/pcadmin/testdata/rules_of_ml.pdf":                                        true, // white lines
+	"/Users/pcadmin/testdata/PrinterOn Enterprise & PaperCut Integration.pdf":        true, // empty text [( )] TJ
+	"/Users/pcadmin/testdata/2013-12-12_rg_final_report.pdf":                         true, // empty text ( )Tj
+	"/Users/pcadmin/testdata/weakLongrangeForcesTheory_01.pdf":                       true, // white lines 1 1 1 sc
+	"/Users/pcadmin/testdata/NOTES_05_Data_Storage_Services_v1.02.pdf":               true, // empty text ( )Tj
+	"/Users/pcadmin/testdata/NOTES_03_Virtual_Machines_v1.02.pdf":                    true, // empty text ( )Tj
+	"/Users/pcadmin/testdata/RDS_2-37_web.pdf":                                       true, // !@#$ I don't know
+	"/Users/pcadmin/testdata/NOTES_04_Cloud_IAM_v1.01.pdf":                           true, // empty text ( )Tj
+	"/Users/pcadmin/testdata/16128_FULLTEXT.pdf":                                     true, // empty text ( )Tj
+	"/Users/pcadmin/testdata/The_Block_Cipher_Companion.pdf":                         true, //!@#$ /X1 Do
+	"/Users/pcadmin/testdata/fireflyforparents.pdf":                                  true, // empty text [( )] TJ
+	"/Users/pcadmin/testdata/Zero_Configuration_Networking_The_Definitive_Guide.pdf": true, // white lines
+	"/Users/pcadmin/testdata/day2_ListeningToHypercolors.pdf":                        true, // white lines
+	"/Users/pcadmin/testdata/psrefman.pdf":                                           true, // !@#$ I don't know
+	"/Users/pcadmin/testdata/Folk_o_bostadsrakningen_1970_12.pdf":                    true, //!@#$ /im51 Do
+	"/Users/pcadmin/testdata/day3_TemporalImageProcessing.pdf":                       true, // white lines
+	"/Users/pcadmin/testdata/printer driver design guide (microsoft).pdf":            true, // ??
+	"/Users/pcadmin/testdata/augmentingReality_salon01.pdf":                          true, // white lines
+	"/Users/pcadmin/testdata/lie.pdf":                                                true, // ??
+	"/Users/pcadmin/testdata/devtest.pdf":                                            true, // ??
+	"/Users/pcadmin/testdata/nsdi17_slides_zheng_0.pdf":                              true, // white lines
+	"/Users/pcadmin/testdata/P08-1.pdf":                                              true, // ??
+	"/Users/pcadmin/testdata/ysoft-safeq-6-documentation.pdf":                        true, // ??
 }
 
 func main() {

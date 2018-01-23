@@ -13,14 +13,17 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	common "github.com/unidoc/unidoc/common"
 	pdfcontent "github.com/unidoc/unidoc/pdf/contentstream"
+	pdfcore "github.com/unidoc/unidoc/pdf/core"
 	pdf "github.com/unidoc/unidoc/pdf/model"
 )
 
@@ -175,81 +178,87 @@ func isPageMarked(page *pdf.PdfPage, desc string, debug bool) (bool, error) {
 	return marked, nil
 }
 
+type OpMark struct {
+	marking  bool
+	stroking bool
+	filling  bool
+}
+
 // markingOperators[op] is true if operator `op` marks the page
-var markingOperators = map[string]bool{
-	`b`:   true,  //   0: closepath, fill, stroke Close, fill, and stroke path using nonzero winding number rule
-	`B`:   true,  //   1: fill, stroke Fill and stroke path using nonzero winding number rule
-	`b*`:  true,  //   2: closepath, eofill, stroke Close, fill, and stroke path using even-odd rule
-	`B*`:  true,  //   3: eofill, stroke Fill and stroke path using even-odd rule
-	`BDC`: false, //  !@#$ 4: (PDF 1.2) Begin marked-content sequence with property list
-	`BI`:  true,  //   5: Begin inline image object
-	`BMC`: false, //   !@#$ 6: (PDF 1.2) Begin marked-content sequence
-	`BT`:  false, //   !@#$ 7: Begin text object
-	`BX`:  false, //   !@#$ 8: (PDF 1.1) Begin compatibility section
-	`c`:   false, //   9: curveto Append curved segment to path (three control points)
-	`cm`:  false, //  10: concat Concatenate matrix to current transformation matrix
-	`CS`:  false, //  11: setcolorspace (PDF 1.1) Set color space for stroking operations
-	`cs`:  false, //  12: setcolorspace (PDF 1.1) Set color space for nonstroking operations
-	`d`:   false, //  13: setdash Set line dash pattern
-	`d0`:  false, //  14: setcharwidth Set glyph width in Type 3 font
-	`d1`:  false, //  15: setcachedevice Set glyph width and bounding box in Type 3 font
-	`Do`:  false, //  16: Invoke named XObject
-	`DP`:  false, //  17: (PDF 1.2) Define marked-content point with property list
-	`EI`:  true,  //  18: End inline image object
-	`EMC`: false, //  !@#$ 19: (PDF 1.2) End marked-content sequence
-	`ET`:  false, //  !@#$ 20: End text object
-	`EX`:  false, //  !@#$ 21: (PDF 1.1) End compatibility section
-	`f`:   true,  //  22: fill Fill path using nonzero winding number rule
-	`F`:   true,  //  23: fill Fill path using nonzero winding number rule (obsolete)
-	`f*`:  true,  //  24: eofill Fill path using even-odd rule
-	`G`:   false, //  25: setgray Set gray level for stroking operations
-	`g`:   false, //  26: setgray Set gray level for nonstroking operations
-	`gs`:  false, //  27: (PDF 1.2) Set parameters from graphics state parameter dictionary
-	`h`:   false, //  28: closepath Close subpath
-	`i`:   false, //  29: setflat Set flatness tolerance
-	`ID`:  true,  //  30: Begin inline image data
-	`j`:   false, //  31: setlinejoin Set line join style
-	`J`:   false, //  32: setlinecap Set line cap style
-	`K`:   false, //  33: setcmykcolor Set CMYK color for stroking operations
-	`k`:   false, //  34: setcmykcolor Set CMYK color for nonstroking operations
-	`l`:   false, //  35: lineto Append straight line segment to path
-	`m`:   false, //  36: moveto Begin new subpath
-	`M`:   false, //  37: setmiterlimit Set miter limit
-	`MP`:  false, //  38: (PDF 1.2) Define marked-content point
-	`n`:   false, //  39: End path without filling or stroking
-	`q`:   false, //  40: gsave Save graphics state
-	`Q`:   false, //  41: grestore Restore graphics state
-	`re`:  false, //  42: Append rectangle to path
-	`RG`:  false, //  43: setrgbcolor Set RGB color for stroking operations
-	`rg`:  false, //  44: setrgbcolor Set RGB color for nonstroking operations
-	`ri`:  false, //  45: Set color rendering intent
-	`s`:   true,  //  46: closepath, stroke Close and stroke path
-	`S`:   true,  //  47: stroke Stroke path
-	`SC`:  false, //  48: setcolor (PDF 1.1) Set color for stroking operations
-	`sc`:  false, //  49: setcolor (PDF 1.1) Set color for nonstroking operations
-	`SCN`: false, //  50: setcolor (PDF 1.2) Set color for stroking operations (ICCBased and special colour spaces)
-	`scn`: false, //  51: setcolor (PDF 1.2) Set color for nonstroking operations (ICCBased and special colour spaces)
-	`sh`:  false, //  52: shfill (PDF 1.3) Paint area defined by shading pattern
-	`T*`:  false, //  53: Move to start of next text line
-	`Tc`:  false, //  54: Set character spacing
-	`Td`:  false, //  55: Move text position
-	`TD`:  false, //  56: Move text position and set leading
-	`Tf`:  false, //  57: selectfont Set text font and size
-	`Tj`:  true,  //  58: show Show text
-	`TJ`:  true,  //  59: Show text, allowing individual glyph positioning
-	`TL`:  false, //  60: Set text leading
-	`Tm`:  false, //  61: Set text matrix and text line matrix
-	`Tr`:  false, //  62: Set text rendering mode
-	`Ts`:  false, //  63: Set text rise
-	`Tw`:  false, //  64: Set word spacing
-	`Tz`:  false, //  65: Set horizontal text scaling
-	`v`:   false, //  66: curveto Append curved segment to path (initial point replicated)
-	`w`:   false, //  67: setlinewidth Set line width
-	`W`:   false, //  68: clip Set clipping path using nonzero winding number rule
-	`W*`:  false, //  69: eoclip Set clipping path using even-odd rule
-	`y`:   false, //  70: curveto Append curved segment to path (final point replicated)
-	`'`:   true,  //  71: Move to next line and show text
-	"\"":  true,  //  72: Set word and character spacing, move to next line, and show text
+var markingOperators = map[string]OpMark{
+	`b`:   {true, true, true},    //   0: closepath, fill, stroke Close, fill, and stroke path using nonzero winding number rule
+	`B`:   {true, true, true},    //   1: fill, stroke Fill and stroke path using nonzero winding number rule
+	`b*`:  {true, true, true},    //   2: closepath, eofill, stroke Close, fill, and stroke path using even-odd rule
+	`B*`:  {true, true, true},    //   3: eofill, stroke Fill and stroke path using even-odd rule
+	`BDC`: {false, false, false}, //  !@#$ 4: (PDF 1.2) Begin marked-content sequence with property list
+	`BI`:  {true, false, false},  //   5: Begin inline image object
+	`BMC`: {false, false, false}, //   !@#$ 6: (PDF 1.2) Begin marked-content sequence
+	`BT`:  {false, false, false}, //   !@#$ 7: Begin text object
+	`BX`:  {false, false, false}, //   !@#$ 8: (PDF 1.1) Begin compatibility section
+	`c`:   {false, false, false}, //   9: curveto Append curved segment to path (three control points)
+	`cm`:  {false, false, false}, //  10: concat Concatenate matrix to current transformation matrix
+	`CS`:  {false, false, false}, //  11: setcolorspace (PDF 1.1) Set color space for stroking operations
+	`cs`:  {false, false, false}, //  12: setcolorspace (PDF 1.1) Set color space for nonstroking operations
+	`d`:   {false, false, false}, //  13: setdash Set line dash pattern
+	`d0`:  {false, false, false}, //  14: setcharwidth Set glyph width in Type 3 font
+	`d1`:  {false, false, false}, //  15: setcachedevice Set glyph width and bounding box in Type 3 font
+	`Do`:  {false, false, false}, //  16: Invoke named XObject
+	`DP`:  {false, false, false}, //  17: (PDF 1.2) Define marked-content point with property list
+	`EI`:  {true, false, false},  //  18: End inline image object
+	`EMC`: {false, false, false}, //  !@#$ 19: (PDF 1.2) End marked-content sequence
+	`ET`:  {false, false, false}, //  !@#$ 20: End text object
+	`EX`:  {false, false, false}, //  !@#$ 21: (PDF 1.1) End compatibility section
+	`f`:   {true, false, true},   //  22: fill Fill path using nonzero winding number rule
+	`F`:   {true, false, true},   //  23: fill Fill path using nonzero winding number rule (obsolete)
+	`f*`:  {true, false, true},   //  24: eofill Fill path using even-odd rule
+	`G`:   {false, false, false}, //  25: setgray Set gray level for stroking operations
+	`g`:   {false, false, false}, //  26: setgray Set gray level for nonstroking operations
+	`gs`:  {false, false, false}, //  27: (PDF 1.2) Set parameters from graphics state parameter dictionary
+	`h`:   {false, false, false}, //  28: closepath Close subpath
+	`i`:   {false, false, false}, //  29: setflat Set flatness tolerance
+	`ID`:  {true, false, false},  //  30: Begin inline image data
+	`j`:   {false, false, false}, //  31: setlinejoin Set line join style
+	`J`:   {false, false, false}, //  32: setlinecap Set line cap style
+	`K`:   {false, false, false}, //  33: setcmykcolor Set CMYK color for stroking operations
+	`k`:   {false, false, false}, //  34: setcmykcolor Set CMYK color for nonstroking operations
+	`l`:   {false, false, false}, //  35: lineto Append straight line segment to path
+	`m`:   {false, false, false}, //  36: moveto Begin new subpath
+	`M`:   {false, false, false}, //  37: setmiterlimit Set miter limit
+	`MP`:  {false, false, false}, //  38: (PDF 1.2) Define marked-content point
+	`n`:   {false, false, false}, //  39: End path without filling or stroking
+	`q`:   {false, false, false}, //  40: gsave Save graphics state
+	`Q`:   {false, false, false}, //  41: grestore Restore graphics state
+	`re`:  {false, false, false}, //  42: Append rectangle to path
+	`RG`:  {false, false, false}, //  43: setrgbcolor Set RGB color for stroking operations
+	`rg`:  {false, false, false}, //  44: setrgbcolor Set RGB color for nonstroking operations
+	`ri`:  {false, false, false}, //  45: Set color rendering intent
+	`s`:   {true, true, false},   //  46: closepath, stroke Close and stroke path
+	`S`:   {true, true, false},   //  47: stroke Stroke path
+	`SC`:  {false, false, false}, //  48: setcolor (PDF 1.1) Set color for stroking operations
+	`sc`:  {false, false, false}, //  49: setcolor (PDF 1.1) Set color for nonstroking operations
+	`SCN`: {false, false, false}, //  50: setcolor (PDF 1.2) Set color for stroking operations (ICCBased and special colour spaces)
+	`scn`: {false, false, false}, //  51: setcolor (PDF 1.2) Set color for nonstroking operations (ICCBased and special colour spaces)
+	`sh`:  {true, true, true},    //  52: shfill (PDF 1.3) Paint area defined by shading pattern
+	`T*`:  {false, false, false}, //  53: Move to start of next text line
+	`Tc`:  {false, false, false}, //  54: Set character spacing
+	`Td`:  {false, false, false}, //  55: Move text position
+	`TD`:  {false, false, false}, //  56: Move text position and set leading
+	`Tf`:  {false, false, false}, //  57: selectfont Set text font and size
+	`Tj`:  {true, true, true},    //  58: show Show text
+	`TJ`:  {true, true, true},    //  59: Show text, allowing individual glyph positioning
+	`TL`:  {false, false, false}, //  60: Set text leading
+	`Tm`:  {false, false, false}, //  61: Set text matrix and text line matrix
+	`Tr`:  {false, false, false}, //  62: Set text rendering mode
+	`Ts`:  {false, false, false}, //  63: Set text rise
+	`Tw`:  {false, false, false}, //  64: Set word spacing
+	`Tz`:  {false, false, false}, //  65: Set horizontal text scaling
+	`v`:   {false, false, false}, //  66: curveto Append curved segment to path (initial point replicated)
+	`w`:   {false, false, false}, //  67: setlinewidth Set line width
+	`W`:   {false, false, false}, //  68: clip Set clipping path using nonzero winding number rule
+	`W*`:  {false, false, false}, //  69: eoclip Set clipping path using even-odd rule
+	`y`:   {false, false, false}, //  70: curveto Append curved segment to path (final point replicated)
+	`'`:   {true, true, true},    //  71: Move to next line and show text
+	"\"":  {true, true, true},    //  72: Set word and character spacing, move to next line, and show text
 }
 
 // isContentStreamMarked returns true if `contents` contains any marking object
@@ -260,8 +269,11 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 		return false, err
 	}
 
-	marked := false // Has a mark been detected in the stream?
-	// markingPatterns := map[pdfcore.PdfObjectName]bool{} // List of already detected patterns. Re-use for subsequent detections.
+	visibleStroke := true                               // Is current stroking color non-white?
+	visibleFill := true                                 // Is current non-stroking color non-nwhite?
+	marked := false                                     // Has a mark been detected in the stream?
+	markingPatterns := map[pdfcore.PdfObjectName]bool{} // List of already detected patterns. Re-use for subsequent detections.
+	processedXObjects := map[string]bool{}              // List of already detected patterns. Re-use for subsequent detections.
 
 	// The content stream processor keeps track of the graphics state and we can make our own handlers to process
 	// certain commands using the AddHandler method. In this case, we hook up to color related operands, and for image
@@ -275,321 +287,220 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 				return nil
 			}
 			operand := op.Operand
-			if markingOperators[operand] {
-				common.Log.Debug("op=%s markingOperators hasMarking=%t", op, true)
-				marked = true
+
+			opMark := markingOperators[operand]
+			if opMark.marking {
+				hasArea := true
+				switch operand {
+				case "BI":
+					marked = true
+				case "Tj":
+					if len(op.Params) < 1 {
+						hasArea = false
+						break
+					}
+					empty, err := emptyStringParam(op.Params[0])
+					if err != nil {
+						return err
+					}
+					if empty {
+						hasArea = false
+					}
+				case "TJ":
+					if len(op.Params) < 1 {
+						hasArea = false
+						break
+					}
+					empty, err := emptyArrayParam(op.Params[0])
+					if err != nil {
+						return err
+					}
+					if empty {
+						hasArea = false
+					}
+				}
+
+				if hasArea && ((visibleStroke && opMark.stroking) || (visibleFill && opMark.filling)) {
+					marked = true
+				}
+				common.Log.Debug("op=%s opMark=%+v hasArea=%t marked=%t", op, opMark, hasArea, marked)
+				return nil
+			}
+
+			switch operand {
+			case "SC", "SCN": // Set stroking color.  Includes pattern colors.
+				if isPatternCS(gs.ColorspaceStroking) {
+					patternColor, ok := gs.ColorStroking.(*pdf.PdfColorPattern)
+					if !ok {
+						return errors.New("Invalid stroking color type")
+					}
+
+					if patternColor.Color != nil {
+						visibleStroke = isColorMarking(patternColor.Color)
+						common.Log.Debug("op=%s visibleStroke=%t", op, visibleStroke)
+						return nil
+					}
+
+					if hasMarking, ok := markingPatterns[patternColor.PatternName]; ok {
+						// Already processed, need not change anything, except underlying color if used.
+						visibleStroke = hasMarking
+						common.Log.Debug("op=%s visibleStroke=%t", op, visibleStroke)
+						return nil
+					}
+
+					// Look up the pattern name and convert it.
+					pattern, found := resources.GetPatternByName(patternColor.PatternName)
+					if !found {
+						return errors.New("Undefined pattern name")
+					}
+					hasMarking, err := isPatternMarked(pattern, debug)
+					if err != nil {
+						common.Log.Error("isPatternMarked failed. err=%v", err)
+						return err
+					}
+					markingPatterns[patternColor.PatternName] = hasMarking
+					visibleStroke = hasMarking
+					common.Log.Debug("op=%s visibleStroke=%t", op, visibleStroke)
+
+				} else {
+					visibleStroke := isColorMarking(gs.ColorStroking)
+					common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v visibleStroke=%t",
+						op, gs.ColorspaceStroking, gs.ColorStroking, visibleStroke)
+				}
+				return nil
+			case "sc", "scn": // Set non-stroking color.
+				if isPatternCS(gs.ColorspaceNonStroking) {
+					op := pdfcontent.ContentStreamOperation{}
+					op.Operand = operand
+					op.Params = []pdfcore.PdfObject{}
+					patternColor, ok := gs.ColorNonStroking.(*pdf.PdfColorPattern)
+					if !ok {
+						return errors.New("Invalid stroking color type")
+					}
+					if patternColor.Color != nil {
+						visibleFill = isColorMarking(patternColor.Color)
+						common.Log.Debug("op=%s visibleFill=%t", op, visibleFill)
+						return nil
+					}
+					if hasMarking, ok := markingPatterns[patternColor.PatternName]; ok {
+						// Already processed, need not change anything, except underlying color if used.
+						visibleFill = hasMarking
+						common.Log.Debug("op=%s visibleFill=%t", op, visibleFill)
+						return nil
+					}
+
+					// Look up the pattern name and convert it.
+					pattern, found := resources.GetPatternByName(patternColor.PatternName)
+					if !found {
+						return errors.New("Undefined pattern name")
+					}
+					hasMarking, err := isPatternMarked(pattern, debug)
+					if err != nil {
+						common.Log.Debug("Unable to convert pattern to grayscale: %v", err)
+						return err
+					}
+					markingPatterns[patternColor.PatternName] = hasMarking // !@#$ Fix color detection code
+					visibleFill = hasMarking
+					common.Log.Debug("op=%s visibleFill=%t", op, visibleFill)
+				} else {
+					hasMarking := isColorMarking(gs.ColorNonStroking)
+					visibleFill = hasMarking
+					common.Log.Debug("op=%s ColorspaceNonStroking=%T ColorNonStroking=%#v visibleFill=%t",
+						op, gs.ColorspaceNonStroking, gs.ColorNonStroking, visibleFill)
+
+				}
+				return nil
+			case "G", "RG", "K": // Set Gray, RGB or CMYK stroking color.
+				visibleStroke = isColorMarking(gs.ColorStroking)
+				common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v visibleStroke=%t",
+					op, gs.ColorspaceStroking, gs.ColorStroking, visibleStroke)
+				return nil
+			case "g", "rg", "k": // Set Gray, RGB or CMYK as non-stroking color.
+				visibleFill = isColorMarking(gs.ColorNonStroking)
+				common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v visibleFill=%t",
+					op, gs.ColorspaceStroking, gs.ColorStroking, visibleFill)
+				return nil
+				// case "sh": // Paints the shape and color defined by shading dict.
+				// 	if len(op.Params) != 1 {
+				// 		return errors.New("Params to sh operator should be 1")
+				// 	}
+				// 	_, ok := op.Params[0].(*pdfcore.PdfObjectName)
+				// 	if !ok {
+				// 		return errors.New("sh parameter should be a name")
+				// 	}
+				// 	marked = true
 			}
 			return nil
-			// switch operand {
-			// case "SC", "SCN": // Set stroking color.  Includes pattern colors.
-			// 	if isPatternCS(gs.ColorspaceStroking) {
-			// 		op := pdfcontent.ContentStreamOperation{}
-			// 		op.Operand = operand
-			// 		op.Params = []pdfcore.PdfObject{}
-
-			// 		patternColor, ok := gs.ColorStroking.(*pdf.PdfColorPattern)
-			// 		if !ok {
-			// 			return errors.New("Invalid stroking color type")
-			// 		}
-
-			// 		if patternColor.Color != nil {
-			// 			if isColorMarking(patternColor.Color) {
-			// 				common.Log.Debug("op=%s hasMarking=%t", op, true)
-			// 				marked = true
-			// 				return nil
-			// 			}
-			// 		}
-
-			// 		if hasMarking, ok := markingPatterns[patternColor.PatternName]; ok {
-			// 			// Already processed, need not change anything, except underlying color if used.
-			// 			if hasMarking {
-			// 				common.Log.Debug("op=%s hasMarking=%t", op, hasMarking)
-			// 				marked = true
-			// 			}
-			// 			return nil
-			// 		}
-
-			// 		// Look up the pattern name and convert it.
-			// 		pattern, found := resources.GetPatternByName(patternColor.PatternName)
-			// 		if !found {
-			// 			return errors.New("Undefined pattern name")
-			// 		}
-			// 		hasMarking, err := isPatternMarked(pattern, debug)
-			// 		if err != nil {
-			// 			common.Log.Error("isPatternMarked failed. err=%v", err)
-			// 			return err
-			// 		}
-			// 		markingPatterns[patternColor.PatternName] = hasMarking
-			// 		marked = marked || hasMarking
-			// 		common.Log.Debug("op=%s hasMarking=%t", op, hasMarking)
-
-			// 	} else {
-			// 		hasMarking := isColorMarking(gs.ColorStroking)
-			// 		marked = marked || hasMarking
-			// 		common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
-			// 			op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
-			// 	}
-			// 	return nil
-			// case "sc", "scn": // Set non-stroking color.
-			// 	if isPatternCS(gs.ColorspaceNonStroking) {
-			// 		op := pdfcontent.ContentStreamOperation{}
-			// 		op.Operand = operand
-			// 		op.Params = []pdfcore.PdfObject{}
-			// 		patternColor, ok := gs.ColorNonStroking.(*pdf.PdfColorPattern)
-			// 		if !ok {
-			// 			return errors.New("Invalid stroking color type")
-			// 		}
-			// 		if patternColor.Color != nil {
-			// 			hasMarking := isColorMarking(patternColor.Color)
-			// 			marked = marked || hasMarking
-			// 			common.Log.Debug("op=%#v hasMarking=%t", op, hasMarking)
-			// 		}
-			// 		if hasMarking, ok := markingPatterns[patternColor.PatternName]; ok {
-			// 			// Already processed, need not change anything, except underlying color if used.
-			// 			marked = marked || hasMarking
-			// 			common.Log.Debug("op=%#v hasMarking=%t", op, hasMarking)
-			// 			return nil
-			// 		}
-
-			// 		// Look up the pattern name and convert it.
-			// 		pattern, found := resources.GetPatternByName(patternColor.PatternName)
-			// 		if !found {
-			// 			return errors.New("Undefined pattern name")
-			// 		}
-			// 		hasMarking, err := isPatternMarked(pattern, debug)
-			// 		if err != nil {
-			// 			common.Log.Debug("Unable to convert pattern to grayscale: %v", err)
-			// 			return err
-			// 		}
-			// 		markingPatterns[patternColor.PatternName] = hasMarking
-			// 	} else {
-			// 		hasMarking := isColorMarking(gs.ColorNonStroking)
-			// 		marked = marked || hasMarking
-			// 		common.Log.Debug("op=%s ColorspaceNonStroking=%T ColorNonStroking=%#v hasMarking=%t",
-			// 			op, gs.ColorspaceNonStroking, gs.ColorNonStroking, hasMarking)
-
-			// 	}
-			// 	return nil
-			// case "G", "RG", "K": // Set Gray, RGB or CMYK stroking color.
-			// 	hasMarking := isColorMarking(gs.ColorStroking)
-			// 	common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
-			// 		op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
-			// 	marked = marked || hasMarking
-			// 	return nil
-			// case "g", "rg", "k": // Set Gray, RGB or CMYK as non-stroking color.
-			// 	hasMarking := isColorMarking(gs.ColorNonStroking)
-			// 	marked = marked || hasMarking
-			// 	common.Log.Debug("op=%s ColorspaceStroking=%T ColorStroking=%#v hasMarking=%t",
-			// 		op, gs.ColorspaceStroking, gs.ColorStroking, hasMarking)
-			// 	return nil
-			// case "sh": // Paints the shape and color defined by shading dict.
-			// 	if len(op.Params) != 1 {
-			// 		return errors.New("Params to sh operator should be 1")
-			// 	}
-			// 	_, ok := op.Params[0].(*pdfcore.PdfObjectName)
-			// 	if !ok {
-			// 		return errors.New("sh parameter should be a name")
-			// 	}
-			// 	marked = true
-			// }
-			// return nil
 		})
-
-	// // Add handler for image related handling.  Note that inline images are completely stored with a
-	// // ContentStreamInlineImage object as the parameter for BI.
-	// processor.AddHandler(pdfcontent.HandlerConditionEnumOperand, "BI",
-	// 	func(op *pdfcontent.ContentStreamOperation, gs pdfcontent.GraphicsState, resources *pdf.PdfPageResources) error {
-	// 		if marked {
-	// 			return nil
-	// 		}
-	// 		if len(op.Params) != 1 {
-	// 			err := errors.New("invalid number of parameters")
-	// 			common.Log.Error("BI error. err=%v")
-	// 			return err
-	// 		}
-	// 		// Inline image.
-	// 		iimg, ok := op.Params[0].(*pdfcontent.ContentStreamInlineImage)
-	// 		if !ok {
-	// 			common.Log.Error("Invalid handling for inline image")
-	// 			return errors.New("Invalid inline image parameter")
-	// 		}
-	// 		common.Log.Debug("iimg=%s", iimg)
-
-	// 		cs, err := iimg.GetColorSpace(resources)
-	// 		if err != nil {
-	// 			common.Log.Error("Error getting color space for inline image: %v", err)
-	// 			return err
-	// 		}
-
-	// 		if cs.GetNumComponents() == 1 {
-	// 			return nil
-	// 		}
-
-	// 		encoder, err := iimg.GetEncoder()
-	// 		if err != nil {
-	// 			common.Log.Error("Error getting encoder for inline image: %v", err)
-	// 			return err
-	// 		}
-
-	// 		switch encoder.GetFilterName() {
-	// 		// TODO: Add JPEG2000 encoding/decoding. Until then we assume JPEG200 images are color
-	// 		case "JPXDecode":
-	// 			return nil
-	// 		// These filters are only used with grayscale images
-	// 		case "CCITTDecode", "JBIG2Decode":
-	// 			return nil
-	// 		}
-
-	// 		img, err := iimg.ToImage(resources)
-	// 		if err != nil {
-	// 			common.Log.Error("Error converting inline image to image: %v", err)
-	// 			return err
-	// 		}
-
-	// 		common.Log.Debug("img=%v %d", img.ColorComponents, img.BitsPerComponent)
-
-	// 		rgbImg, err := cs.ImageToRGB(*img)
-	// 		if err != nil {
-	// 			common.Log.Error("Error converting image to rgb: %v", err)
-	// 			return err
-	// 		}
-	// 		hasMarking := isRgbImageColored(rgbImg, debug)
-	// 		marked = marked || hasMarking
-	// 		common.Log.Debug("hasMarking=%t", hasMarking)
-
-	// 		return nil
-	// 	})
-
-	// // Handler for XObject Image and Forms.
-	// processedXObjects := map[string]bool{} // Keep track of processed XObjects to avoid repetition.
 
 	processor.AddHandler(pdfcontent.HandlerConditionEnumOperand, "Do",
 		func(op *pdfcontent.ContentStreamOperation, gs pdfcontent.GraphicsState, resources *pdf.PdfPageResources) error {
-			marked = true
+			if len(op.Params) < 1 {
+				common.Log.Error("Invalid number of params for Do object")
+				return errors.New("Range check")
+			}
+
+			// XObject.
+			name := op.Params[0].(*pdfcore.PdfObjectName)
+			common.Log.Debug("Name=%#v=%#q", name, string(*name))
+
+			// Only process each one once.
+			hasMarking, has := processedXObjects[string(*name)]
+			common.Log.Debug("name=%q has=%t hasMarking=%t processedXObjects=%+v",
+				*name, has, hasMarking, processedXObjects)
+			if has {
+				marked = marked || hasMarking
+				return nil
+			}
+			processedXObjects[string(*name)] = false
+
+			_, xtype := resources.GetXObjectByName(*name)
+			common.Log.Debug("xtype=%+v pdf.XObjectTypeImage=%v", xtype, pdf.XObjectTypeImage)
+
+			if xtype == pdf.XObjectTypeImage {
+				marked = true
+				common.Log.Debug("image XObject name=%#q hasMarking=%t", *name, hasMarking)
+				return nil
+
+			} else if xtype == pdf.XObjectTypeForm {
+				common.Log.Debug(" XObject Form: %s", *name)
+
+				// Go through the XObject Form content stream.
+				xform, err := resources.GetXObjectFormByName(*name)
+				if err != nil {
+					common.Log.Error("err=%v", err)
+					return err
+				}
+
+				formContent, err := xform.GetContentStream()
+				if err != nil {
+					common.Log.Error("err=%v")
+					return err
+				}
+
+				// Process the content stream in the Form object too:
+				// XXX/TODO/Consider: Use either form resources (priority) and fall back to page resources alternatively
+				// if not found.
+				// Have not come into cases where needed yet.
+				formResources := xform.Resources
+				if formResources == nil {
+					formResources = resources
+				}
+
+				// Process the content stream in the Form object too:
+				hasMarking, err := isContentStreamMarked(string(formContent), formResources, debug)
+				if err != nil {
+					common.Log.Error("err=%v", err)
+					return err
+				}
+				processedXObjects[string(*name)] = hasMarking
+				marked = marked || hasMarking
+				common.Log.Debug("hasMarking=%t", hasMarking)
+
+			}
+
 			return nil
 		})
-
-	// processor.AddHandler(pdfcontent.HandlerConditionEnumOperand, "Do",
-	// 	func(op *pdfcontent.ContentStreamOperation, gs pdfcontent.GraphicsState, resources *pdf.PdfPageResources) error {
-	// 		if marked {
-	// 			return nil
-	// 		}
-
-	// 		if len(op.Params) < 1 {
-	// 			common.Log.Error("Invalid number of params for Do object")
-	// 			return errors.New("Range check")
-	// 		}
-
-	// 		// XObject.
-	// 		name := op.Params[0].(*pdfcore.PdfObjectName)
-	// 		common.Log.Debug("Name=%#v=%#q", name, string(*name))
-
-	// 		// Only process each one once.
-	// 		hasMarking, has := processedXObjects[string(*name)]
-	// 		common.Log.Debug("name=%q has=%t hasMarking=%t processedXObjects=%+v",
-	// 			*name, has, hasMarking, processedXObjects)
-	// 		if has {
-	// 			marked = marked || hasMarking
-	// 			return nil
-	// 		}
-	// 		processedXObjects[string(*name)] = false
-
-	// 		_, xtype := resources.GetXObjectByName(*name)
-	// 		common.Log.Debug("xtype=%+v pdf.XObjectTypeImage=%v", xtype, pdf.XObjectTypeImage)
-
-	// 		if xtype == pdf.XObjectTypeImage {
-	// 			ximg, err := resources.GetXObjectImageByName(*name)
-	// 			if err != nil {
-	// 				common.Log.Error("Error w/GetXObjectImageByName : %v", err)
-	// 				return err
-	// 			}
-	// 			common.Log.Debug("!!Filter=%s ColorSpace=%s ImageMask=%v wxd=%dx%d",
-	// 				ximg.Filter.GetFilterName(), ximg.ColorSpace,
-	// 				ximg.ImageMask, *ximg.Width, *ximg.Height)
-	// 			// Ignore gray color spaces
-	// 			if _, isIndexed := ximg.ColorSpace.(*pdf.PdfColorspaceSpecialIndexed); !isIndexed {
-	// 				if ximg.ColorSpace.GetNumComponents() == 1 {
-	// 					return nil
-	// 				}
-	// 			}
-	// 			switch ximg.Filter.GetFilterName() {
-	// 			// TODO: Add JPEG2000 encoding/decoding. Until then we assume JPEG200 images are color
-	// 			case "JPXDecode":
-	// 				processedXObjects[string(*name)] = true
-	// 				marked = true
-	// 				return nil
-	// 			// These filters are only used with grayscale images
-	// 			case "CCITTDecode", "JBIG2Decode":
-
-	// 				return nil
-	// 			}
-
-	// 			// Hacky workaround for Szegedy_Going_Deeper_With_2015_CVPR_paper.pdf that has a marked image
-	// 			// that is completely masked
-	// 			if ximg.Filter.GetFilterName() == "RunLengthDecode" && ximg.SMask != nil {
-	// 				return nil
-	// 			}
-
-	// 			img, err := ximg.ToImage()
-	// 			if err != nil {
-	// 				common.Log.Error("Error w/ToImage: %v", err)
-	// 				return err
-	// 			}
-
-	// 			rgbImg, err := ximg.ColorSpace.ImageToRGB(*img)
-	// 			if err != nil {
-	// 				common.Log.Error("Error ImageToRGB: %v", err)
-	// 				return err
-	// 			}
-
-	// 			common.Log.Debug("img: ColorComponents=%d wxh=%dx%d", img.ColorComponents, img.Width, img.Height)
-	// 			common.Log.Debug("ximg: ColorSpace=%T=%s mask=%v", ximg.ColorSpace, ximg.ColorSpace, ximg.Mask)
-	// 			common.Log.Debug("rgbImg: ColorComponents=%d wxh=%dx%d", rgbImg.ColorComponents, rgbImg.Width, rgbImg.Height)
-
-	// 			hasMarking := isRgbImageColored(rgbImg, debug)
-	// 			processedXObjects[string(*name)] = hasMarking
-	// 			marked = marked || hasMarking
-	// 			common.Log.Debug("hasMarking=%t", hasMarking)
-
-	// 		} else if xtype == pdf.XObjectTypeForm {
-	// 			common.Log.Debug(" XObject Form: %s", *name)
-
-	// 			// Go through the XObject Form content stream.
-	// 			xform, err := resources.GetXObjectFormByName(*name)
-	// 			if err != nil {
-	// 				common.Log.Error("err=%v", err)
-	// 				return err
-	// 			}
-
-	// 			formContent, err := xform.GetContentStream()
-	// 			if err != nil {
-	// 				common.Log.Error("err=%v")
-	// 				return err
-	// 			}
-
-	// 			// Process the content stream in the Form object too:
-	// 			// XXX/TODO/Consider: Use either form resources (priority) and fall back to page resources alternatively
-	// 			// if not found.
-	// 			// Have not come into cases where needed yet.
-	// 			formResources := xform.Resources
-	// 			if formResources == nil {
-	// 				formResources = resources
-	// 			}
-
-	// 			// Process the content stream in the Form object too:
-	// 			hasMarking, err := isContentStreamMarked(string(formContent), formResources, debug)
-	// 			if err != nil {
-	// 				common.Log.Error("err=%v", err)
-	// 				return err
-	// 			}
-	// 			processedXObjects[string(*name)] = hasMarking
-	// 			marked = marked || hasMarking
-	// 			common.Log.Debug("hasMarking=%t", hasMarking)
-
-	// 		}
-
-	// 		return nil
-	// 	})
 
 	err = processor.Process(resources)
 	if err != nil {
@@ -598,6 +509,42 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 	}
 
 	return marked, nil
+}
+
+func emptyArrayParam(param pdfcore.PdfObject) (bool, error) {
+	common.Log.Debug("emptyArrayParam: param=%s", param)
+	arr, ok := param.(*pdfcore.PdfObjectArray)
+	if !ok {
+		return false, fmt.Errorf("Invalid parameter type, not array (%T)", param)
+	}
+	for _, p := range *arr {
+		if empty, err := emptyStringParam(p); err != nil || !empty {
+			return empty, err
+		}
+	}
+	common.Log.Debug("emptyArrayParam: EMPTY!!")
+	return true, nil
+}
+
+func emptyStringParam(param pdfcore.PdfObject) (bool, error) {
+	text, ok := param.(*pdfcore.PdfObjectString)
+	if !ok {
+		return false, fmt.Errorf("Invalid parameter type, not string (%T)", param)
+	}
+	trimmed := stripCtlFromUTF8(string(*text))
+	empty := len(trimmed) == 0
+	common.Log.Debug("emptyStringParam: empty=%t len=%d text='%s' trimmed=%#q=%+v",
+		empty, len(trimmed), text, trimmed, []byte(trimmed))
+	return empty, nil
+}
+
+func stripCtlFromUTF8(str string) string {
+	return strings.Map(func(r rune) rune {
+		if r > 32 && r != 127 {
+			return r
+		}
+		return -1
+	}, str)
 }
 
 // isPatternCS returns true if `colorspace` represents a Pattern colorspace.

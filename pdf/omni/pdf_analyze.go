@@ -207,10 +207,6 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 			switch operand {
 			case "SC", "SCN": // Set stroking color.  Includes pattern colors.
 				if isPatternCS(gs.ColorspaceStroking) {
-					op := pdfcontent.ContentStreamOperation{}
-					op.Operand = operand
-					op.Params = []pdfcore.PdfObject{}
-
 					patternColor, ok := gs.ColorStroking.(*pdf.PdfColorPattern)
 					if !ok {
 						return errors.New("Invalid stroking color type")

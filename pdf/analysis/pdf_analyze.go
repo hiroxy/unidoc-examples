@@ -433,7 +433,8 @@ func isContentStreamColored(contents string, resources *pdf.PdfPageResources, de
 
 			// Only process each one once.
 			hasCol, has := processedXObjects[string(*name)]
-			common.Log.Debug("name=%q has=%t hasCol=%t processedXObjects=%+v", *name, has, hasCol, processedXObjects)
+			common.Log.Debug("name=%q has=%t hasCol=%t processedXObjects=%+v",
+				*name, has, hasCol, processedXObjects)
 			if has {
 				colored = colored || hasCol
 				return nil

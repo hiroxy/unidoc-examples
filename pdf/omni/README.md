@@ -2,6 +2,10 @@ Detect and Remove Blank Pages in PDFs
 =====================================
 
 * Remove pages with no marks
+** No marking operators at all
+** White marks
+** Empty marks e.g. ( ) Tj
+** Marks off page TODO. Need to track current point
 * Remove pages with no content. e.g.
 **  Watermark only
 **  Page number only

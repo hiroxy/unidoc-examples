@@ -416,6 +416,7 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 
 			return nil
 		})
+
 	// Add handler for image related handling.  Note that inline images are completely stored with a ContentStreamInlineImage
 	// object as the parameter for BI.
 	processor.AddHandler(pdfcontent.HandlerConditionEnumOperand, "BI",
@@ -506,6 +507,37 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 	// Handler for XObject Image and Forms.
 	processedXObjects := map[string]bool{} // Keep track of processed XObjects to avoid repetition.
 
+	exclusions := map[string]bool{
+		// "Image8":  true, //  /Image8 58 0 R
+		"Image12": true,
+		"Image14": true,
+		"Image18": true,
+		"Image27": true,
+
+		"Image30": true,
+
+		"Image33": true,
+		"Image36": true,
+		"Image39": true,
+
+		"Image42": true,
+		"Image45": true,
+
+		"Image48": true,
+		"Image50": true,
+
+		// A problem image is here ^^^
+
+		// "Image47": true,
+
+		// "Image35": true,
+
+		// "Image38": true,
+		// "Image32": true,
+		// "Image10": true,
+		// "Image29": true,
+	}
+
 	processor.AddHandler(pdfcontent.HandlerConditionEnumOperand, "Do",
 		func(op *pdfcontent.ContentStreamOperation, gs pdfcontent.GraphicsState, resources *pdf.PdfPageResources) error {
 			if len(op.Params) < 1 {
@@ -576,7 +608,13 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 					dctEncoder.ColorComponents = 1
 				}
 
-				ximgGray, err := pdf.UpdateXObjectImageFromImage(ximg, &grayImage, nil, encoder)
+				_, freshImage := exclusions[string(*name)]
+				ximg2 := ximg
+				if freshImage {
+					ximg2 = pdf.NewXObjectImage()
+				}
+
+				ximgGray, err := pdf.UpdateXObjectImageFromImage(ximg2, &grayImage, nil, encoder)
 				if err != nil {
 					if err == pdfcore.ErrUnsupportedEncodingParameters {
 						// Unsupported encoding parameters, revert to a basic flate encoder without predictor.
@@ -641,6 +679,12 @@ func transformContentStreamToGrayscale(contents string, resources *pdf.PdfPageRe
 	if err != nil {
 		fmt.Printf("Error processing: %v\n", err)
 		return nil, err
+	}
+
+	if len(processedXObjects) > 0 {
+		fmt.Println("--------------------------------^^--------------------------------")
+		fmt.Printf("exclusions := %#v\n", processedXObjects)
+		fmt.Println("--------------------------------vv--------------------------------")
 	}
 
 	return processedOperations.Bytes(), nil

@@ -1,12 +1,21 @@
 /*
- * Detect the number of pages, the color pages (1-offset) and the largest page size in a PDF file.
+ * Detect the number of pages, the marked pages (1-offset) and the largest page size in a PDF file.
  *
  * Run as: ./pdf_page_summaries [-d] <file>
  *
  * The results are written to a JSON dict on stdout.
  *
+ * type Summary struct {
+ *  NumPages         int
+ *  Width            float64
+ *  Height           float64
+ *  TextMarkedPages  []int
+ *  GraphMarkedPages []int
+ *  }
+ *
  *  See the other command line options in the top of main()
  *      -d Write debug level logs to stdout
+
  */
 
 package main
@@ -63,7 +72,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	numPages, markedPages, width, height, err := describePdfPages(inputPath)
+	numPages, textMarkedPages, graphMarkedPages, width, height, err := describePdfPages(inputPath)
 	if err != nil {
 		common.Log.Error("describePdfPages failed. err=%v", err)
 		os.Exit(1)
@@ -74,10 +83,11 @@ func main() {
 	}
 
 	err = writeSummary(Summary{
-		NumPages:    numPages,
-		Width:       width,
-		Height:      height,
-		MarkedPages: markedPages,
+		NumPages:         numPages,
+		Width:            width,
+		Height:           height,
+		TextMarkedPages:  textMarkedPages,
+		GraphMarkedPages: graphMarkedPages,
 	})
 	if err != nil {
 		common.Log.Error("describePdfPages failed. err=%v", err)
@@ -86,36 +96,37 @@ func main() {
 }
 
 // describePdfPages reads PDF `inputPath` and returns number of pages, slice of marked page numbers (1-offset)
-func describePdfPages(inputPath string) (int, []int, float64, float64, error) {
+func describePdfPages(inputPath string) (int, []int, []int, float64, float64, error) {
 
 	f, err := os.Open(inputPath)
 	if err != nil {
-		return 0, []int{}, 0.0, 0.0, err
+		return 0, []int{}, []int{}, 0.0, 0.0, err
 	}
 	defer f.Close()
 
 	pdfReader, err := pdf.NewPdfReader(f)
 	if err != nil {
-		return 0, []int{}, 0.0, 0.0, err
+		return 0, []int{}, []int{}, 0.0, 0.0, err
 	}
 
 	isEncrypted, err := pdfReader.IsEncrypted()
 	if err != nil {
-		return 0, []int{}, 0.0, 0.0, err
+		return 0, []int{}, []int{}, 0.0, 0.0, err
 	}
 	if isEncrypted {
 		_, err = pdfReader.Decrypt([]byte(""))
 		if err != nil {
-			return 0, []int{}, 0.0, 0.0, err
+			return 0, []int{}, []int{}, 0.0, 0.0, err
 		}
 	}
 
 	numPages, err := pdfReader.GetNumPages()
 	if err != nil {
-		return numPages, []int{}, 0.0, 0.0, err
+		return numPages, []int{}, []int{}, 0.0, 0.0, err
 	}
 
-	markedPages := []int{}
+	textMarkedPages := []int{}
+	graphMarkedPages := []int{}
 	var width, height float64
 
 	for i := 0; i < numPages; i++ {
@@ -135,14 +146,17 @@ func describePdfPages(inputPath string) (int, []int, float64, float64, error) {
 		desc := fmt.Sprintf("%s:page%d", filepath.Base(inputPath), pageNum)
 		marked, err := isPageMarked(page, desc, globalDebug)
 		if err != nil {
-			return numPages, markedPages, width, height, err
+			return numPages, textMarkedPages, graphMarkedPages, width, height, err
 		}
-		if marked {
-			markedPages = append(markedPages, pageNum)
+		if marked.textMarked {
+			textMarkedPages = append(textMarkedPages, pageNum)
+		}
+		if marked.graphMarked {
+			graphMarkedPages = append(graphMarkedPages, pageNum)
 		}
 	}
 
-	return numPages, markedPages, width, height, nil
+	return numPages, textMarkedPages, graphMarkedPages, width, height, nil
 }
 
 // =================================================================================================
@@ -151,13 +165,13 @@ func describePdfPages(inputPath string) (int, []int, float64, float64, error) {
 
 // isPageMarked returns true if `page` contains color. It also references
 // XObject Images and Forms to _possibly_ record if they contain color
-func isPageMarked(page *pdf.PdfPage, desc string, debug bool) (bool, error) {
+func isPageMarked(page *pdf.PdfPage, desc string, debug bool) (Marked, error) {
 	// For each page, we go through the resources and look for the images.
 
 	contents, err := page.GetAllContentStreams()
 	if err != nil {
 		common.Log.Error("GetAllContentStreams failed. err=%v", err)
-		return false, err
+		return Marked{}, err
 	}
 
 	if debug {
@@ -169,11 +183,11 @@ func isPageMarked(page *pdf.PdfPage, desc string, debug bool) (bool, error) {
 	}
 
 	marked, err := isContentStreamMarked(contents, page.Resources, debug)
-	common.Log.Debug("marked=%t err=%v", marked, err)
+	common.Log.Debug("marked=%+v err=%v", marked, err)
 
 	if err != nil {
 		common.Log.Error("isContentStreamMarked failed. err=%v", err)
-		return false, err
+		return Marked{}, err
 	}
 	return marked, nil
 }
@@ -244,7 +258,7 @@ var markingOperators = map[string]OpMark{
 	`Td`:  {false, false, false}, //  55: Move text position
 	`TD`:  {false, false, false}, //  56: Move text position and set leading
 	`Tf`:  {false, false, false}, //  57: selectfont Set text font and size
-	`Tj`:  {true, true, true},    //  58: show Show text
+	`Tj`:  {true, true, true},    //  58: Show text
 	`TJ`:  {true, true, true},    //  59: Show text, allowing individual glyph positioning
 	`TL`:  {false, false, false}, //  60: Set text leading
 	`Tm`:  {false, false, false}, //  61: Set text matrix and text line matrix
@@ -261,19 +275,39 @@ var markingOperators = map[string]OpMark{
 	"\"":  {true, true, true},    //  72: Set word and character spacing, move to next line, and show text
 }
 
-// isContentStreamMarked returns true if `contents` contains any marking object
-func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, debug bool) (bool, error) {
+var textOperators = map[string]bool{
+	`Tj`: true, //  58:  Show text
+	`TJ`: true, //  59: Show text, allowing individual glyph positioning
+	`'`:  true, //  71: Move to next line and show text
+	"\"": true, //  72: Set word and character spacing, move to next line, and show text
+}
+
+type Marked struct {
+	textMarked  bool // Has a text mark been detected in the stream?
+	graphMarked bool // Has a non-text mark been detected in the stream?
+}
+
+func (marked *Marked) add(m Marked) {
+	marked.textMarked = marked.textMarked || m.textMarked
+	marked.graphMarked = marked.graphMarked || m.graphMarked
+}
+
+// isContentStreamMarked returns (marked, error)
+//  textMarked is true if `contents` contains any text marking object
+//  graphMarked is true if `contents` contains any non-text marking object
+func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, debug bool) (Marked, error) {
 	cstreamParser := pdfcontent.NewContentStreamParser(contents)
 	operations, err := cstreamParser.Parse()
 	if err != nil {
-		return false, err
+		common.Log.Debug("err=%v", err)
+		return Marked{}, err
 	}
 
 	visibleStroke := true                               // Is current stroking color non-white?
 	visibleFill := true                                 // Is current non-stroking color non-nwhite?
-	marked := false                                     // Has a mark been detected in the stream?
+	marked := Marked{}                                  // Has a  mark been detected in the stream?
 	markingPatterns := map[pdfcore.PdfObjectName]bool{} // List of already detected patterns. Re-use for subsequent detections.
-	processedXObjects := map[string]bool{}              // List of already detected patterns. Re-use for subsequent detections.
+	processedXObjects := map[string]Marked{}            // List of already detected patterns. Re-use for subsequent detections.
 
 	// The content stream processor keeps track of the graphics state and we can make our own handlers to process
 	// certain commands using the AddHandler method. In this case, we hook up to color related operands, and for image
@@ -283,20 +317,21 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 	processor.AddHandler(pdfcontent.HandlerConditionEnumAllOperands, "",
 		func(op *pdfcontent.ContentStreamOperation, gs pdfcontent.GraphicsState,
 			resources *pdf.PdfPageResources) error {
-			if marked {
+			if marked.graphMarked && marked.textMarked {
 				return nil
 			}
 			operand := op.Operand
-
 			opMark := markingOperators[operand]
+			_, isText := textOperators[operand]
+
 			if opMark.marking {
-				hasArea := true
+				textHasArea := true
 				switch operand {
 				case "BI":
-					marked = true
+					marked.graphMarked = true
 				case "Tj":
 					if len(op.Params) < 1 {
-						hasArea = false
+						textHasArea = false
 						break
 					}
 					empty, err := emptyStringParam(op.Params[0])
@@ -304,11 +339,11 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 						return err
 					}
 					if empty {
-						hasArea = false
+						textHasArea = false
 					}
 				case "TJ":
 					if len(op.Params) < 1 {
-						hasArea = false
+						textHasArea = false
 						break
 					}
 					empty, err := emptyArrayParam(op.Params[0])
@@ -316,14 +351,22 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 						return err
 					}
 					if empty {
-						hasArea = false
+						textHasArea = false
 					}
 				}
 
-				if hasArea && ((visibleStroke && opMark.stroking) || (visibleFill && opMark.filling)) {
-					marked = true
+				if isText {
+					if textHasArea && ((visibleStroke && opMark.stroking) || (visibleFill && opMark.filling)) {
+						marked.textMarked = true
+					}
+				} else {
+					if (visibleStroke && opMark.stroking) || (visibleFill && opMark.filling) {
+						marked.graphMarked = true
+					}
+
 				}
-				common.Log.Debug("op=%s opMark=%+v hasArea=%t marked=%t", op, opMark, hasArea, marked)
+				common.Log.Debug("op=%s opMark=%+v textHasArea=%t marked=%+v",
+					op, opMark, textHasArea, marked)
 				return nil
 			}
 
@@ -449,17 +492,17 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 			common.Log.Debug("name=%q has=%t hasMarking=%t processedXObjects=%+v",
 				*name, has, hasMarking, processedXObjects)
 			if has {
-				marked = marked || hasMarking
+				marked.add(hasMarking)
 				return nil
 			}
-			processedXObjects[string(*name)] = false
+			processedXObjects[string(*name)] = Marked{}
 
 			_, xtype := resources.GetXObjectByName(*name)
 			common.Log.Debug("xtype=%+v pdf.XObjectTypeImage=%v", xtype, pdf.XObjectTypeImage)
 
 			if xtype == pdf.XObjectTypeImage {
-				marked = true
-				common.Log.Debug("image XObject name=%#q hasMarking=%t", *name, hasMarking)
+				marked.graphMarked = true
+				common.Log.Debug("image XObject name=%#q hasMarking=%+v", *name, hasMarking)
 				return nil
 
 			} else if xtype == pdf.XObjectTypeForm {
@@ -494,7 +537,7 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 					return err
 				}
 				processedXObjects[string(*name)] = hasMarking
-				marked = marked || hasMarking
+				marked.add(hasMarking)
 				common.Log.Debug("hasMarking=%t", hasMarking)
 
 			}
@@ -505,7 +548,7 @@ func isContentStreamMarked(contents string, resources *pdf.PdfPageResources, deb
 	err = processor.Process(resources)
 	if err != nil {
 		common.Log.Error("processor.Process returned: err=%v", err)
-		return false, err
+		return Marked{}, err
 	}
 
 	return marked, nil
@@ -518,6 +561,14 @@ func emptyArrayParam(param pdfcore.PdfObject) (bool, error) {
 		return false, fmt.Errorf("Invalid parameter type, not array (%T)", param)
 	}
 	for _, p := range *arr {
+
+		if _, ok := p.(*pdfcore.PdfObjectFloat); ok {
+			continue
+		}
+		if _, ok := p.(*pdfcore.PdfObjectInteger); ok {
+			continue
+		}
+
 		if empty, err := emptyStringParam(p); err != nil || !empty {
 			return empty, err
 		}
@@ -553,7 +604,7 @@ func isPatternCS(cs pdf.PdfColorspace) bool {
 	return isPattern
 }
 
-// isPatternMarked returns true if `pattern` contains color (tiling or shading pattern).
+// isPatternMarked returns true if `pattern` contains marking colors (tiling or shading pattern).
 func isPatternMarked(pattern *pdf.PdfPattern, debug bool) (bool, error) {
 	// Case 1: Colored tiling patterns.  Need to process the content stream and replace.
 	if pattern.IsTiling() {
@@ -565,10 +616,11 @@ func isPatternMarked(pattern *pdf.PdfPattern, debug bool) (bool, error) {
 			return false, err
 		}
 		marked, err := isContentStreamMarked(string(content), tilingPattern.Resources, debug)
-		return marked, err
+		return marked.graphMarked || marked.textMarked, err
 
 	} else if pattern.IsShading() {
-		// Case 2: Shading patterns.  Need to create a new colorspace that can map from N=3,4 colorspaces to grayscale.
+		// Case 2: Shading patterns.  Need to create a new colorspace that can map from N=3,4
+		// colorspaces to grayscale.
 		return true, nil
 	}
 	common.Log.Error("isPatternMarked. pattern is neither tiling nor shading")
@@ -578,9 +630,6 @@ func isPatternMarked(pattern *pdf.PdfPattern, debug bool) (bool, error) {
 func isColorMarking(color pdf.PdfColor) bool {
 	marking := isColorMarking_(color)
 	common.Log.Debug("isColorMarking: %T %t", color, marking)
-	// if marking {
-	// 	panic("RRRR")
-	// }
 	return marking
 }
 
@@ -683,10 +732,11 @@ func regularFile(path string) bool {
 }
 
 type Summary struct {
-	NumPages    int
-	Width       float64
-	Height      float64
-	MarkedPages []int
+	NumPages         int
+	Width            float64
+	Height           float64
+	TextMarkedPages  []int
+	GraphMarkedPages []int
 }
 
 func writeSummary(a Summary) error {

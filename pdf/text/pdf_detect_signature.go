@@ -1,9 +1,10 @@
 /*
- * Basic example for text searching: Retrieving position of a signature line in PDF where the signature line is given by
+ * Basic example for text searching: Retrieving position of a signature line in PDF where the signature
+  * line is given by
  * "__________________" text. And positioned with a Tm operation above.
  *
  * Run as: go run pdf_detect_signature.go input.pdf
- */
+*/
 
 package main
 

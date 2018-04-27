@@ -219,6 +219,23 @@ func equalSlices(a, b []int) bool {
 	return true
 }
 
+// concatSets returns elements that are in `a' or `b` or both
+func concatSets(a, b []int) []int {
+	m := map[int]bool{}
+	for _, i := range a {
+		m[i] = true
+	}
+	for _, i := range b {
+		m[i] = true
+	}
+	c := []int{}
+	for i := range m {
+		c = append(c, i)
+	}
+	sort.Ints(c)
+	return c
+}
+
 // runPdfPage reads PDF `pdf` and returns number of pages, slice of marked page numbers (1-offset)
 func runPdfPage(pdf string) (int, []int, error) {
 
@@ -241,8 +258,8 @@ func runPdfPage(pdf string) (int, []int, error) {
 		return 0, nil, err
 	}
 	common.Log.Debug("summary=%+v", summary)
-	sort.Ints(summary.MarkedPages)
-	return summary.NumPages, summary.MarkedPages, nil
+
+	return summary.NumPages, concatSets(summary.TextMarkedPages, summary.GraphMarkedPages), nil
 }
 
 // sortFiles returns the paths of the files in `pathList` sorted by ascending size.
@@ -527,10 +544,11 @@ func sliceDiff(a, b []int) []int {
 }
 
 type Summary struct {
-	NumPages    int
-	Width       float64
-	Height      float64
-	MarkedPages []int
+	NumPages         int
+	Width            float64
+	Height           float64
+	TextMarkedPages  []int
+	GraphMarkedPages []int
 }
 
 func readSummary(b []byte) (a Summary, err error) {

@@ -27,14 +27,14 @@ func main() {
 	inputPath := os.Args[1]
 
 	fmt.Printf("Input file: %s\n", inputPath)
-	err := inspectPdf(inputPath)
+	err := inspectPdf(inputPath, -1)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func inspectPdf(inputPath string) error {
+func inspectPdf(inputPath string, maxLen int) error {
 	f, err := os.Open(inputPath)
 	if err != nil {
 		return err
@@ -75,25 +75,34 @@ func inspectPdf(inputPath string) error {
 
 	// Output.
 	fmt.Printf("%d PDF objects:\n", len(objNums))
-	for i, objNum := range objNums {
+	for _, objNum := range objNums {
+		// if objNum != 17 {
+		// 	continue
+		// }
 		obj, err := pdfReader.GetIndirectObjectByNumber(objNum)
 		if err != nil {
 			return err
 		}
 		fmt.Println("=========================================================")
-		fmt.Printf("%3d: %d 0 %T\n", i, objNum, obj)
+		fmt.Printf("%4d 0 obj %T\n", objNum, obj)
 		if stream, is := obj.(*pdfcore.PdfObjectStream); is {
 			decoded, err := pdfcore.DecodeStream(stream)
 			if err != nil {
-				return err
+				continue
 			}
-			fmt.Printf("Decoded:\n%s\n", decoded)
+			fmt.Printf("Decoded:\n%s\n", chomp(string(decoded), maxLen))
 		} else if indObj, is := obj.(*pdfcore.PdfIndirectObject); is {
 			fmt.Printf("%T\n", indObj.PdfObject)
-			fmt.Printf("%s\n", indObj.PdfObject.String())
+			fmt.Printf("%s\n", chomp(indObj.PdfObject.String(), maxLen))
 		}
-
 	}
 
 	return nil
+}
+
+func chomp(s string, n int) string {
+	if n < 0 || n > len(s) {
+		return s
+	}
+	return s[:n]
 }

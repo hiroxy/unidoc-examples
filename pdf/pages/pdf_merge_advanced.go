@@ -68,9 +68,9 @@ func getDict(obj core.PdfObject) *core.PdfObjectDictionary {
 	return dict
 }
 
-// Merge form resources.
-// TODO: Add handling for cases where same resource name is used with different values.  In that case, need to rename
-// the resource and change all references to that value with the new value.
+// mergeResources merges the form resources `r2` into `r` and returns `r`
+// TODO: Add handling for cases where same resource name is used with different values.  In that
+// case, need to rename the resource and change all references to that value with the new value.
 func mergeResources(r, r2 *pdf.PdfPageResources) (*pdf.PdfPageResources, error) {
 	// Merge XObject resources.
 	if r.XObject == nil {

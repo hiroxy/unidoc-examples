@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/license"
 	"github.com/unidoc/unidoc/common"
 	pdfcore "github.com/unidoc/unidoc/pdf/core"
 	"github.com/unidoc/unidoc/pdf/extractor"
@@ -66,7 +65,7 @@ func main() {
 	for i, inputPath := range files {
 		fmt.Println("======================== ^^^ ========================")
 		fmt.Printf("Pdf File %3d of %d %q\n", i+1, len(files), inputPath)
-		err = outputPdfText(inputPath)
+		err := outputPdfText(inputPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Pdf File %3d of %d %q err=%v\n", i+1, len(files), inputPath, err)
 			if err == pdf.ErrEncrypted || err == pdfcore.ErrNoPdfVersion {
@@ -120,8 +119,8 @@ func outputPdfText(inputPath string) error {
 		}
 
 		// fmt.Println("---------------------------------------")
-		fmt.Printf("Page %d:\n", pageNum)
-		fmt.Printf("%#q\n", text)
+		fmt.Printf("Page %d: %q\n", pageNum, inputPath)
+		fmt.Printf("%s\n", text)
 		fmt.Println("---------------------------------------")
 	}
 

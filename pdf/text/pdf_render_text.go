@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,6 +50,11 @@ func main() {
 		`shamirturing.pdf`:                   true,
 		`warnock_camelot.pdf`:                true,
 		`B02.pdf`:                            true,
+
+		// [DEBUG]  text.go:617 getFont: NewPdfFontFromPdfObject failed. name=`C0_0` err=Bad state
+		// [DEBUG]  processor.go:279 Processor handler error: Bad state
+		// [ERROR]  text.go:212 Error processing: Bad state
+		`Data Classification For Dummies_Identity Finder_Special Edition_Todd_Feinman.pdf`: true,
 	}
 	files2 := []string{}
 	for _, inputPath := range files {
@@ -62,13 +68,22 @@ func main() {
 	}
 	files = files2
 
+	// if len(files) > 1 {
+	// 	files = files[280:]
+	// }
+
 	for i, inputPath := range files {
 		fmt.Println("======================== ^^^ ========================")
 		fmt.Printf("Pdf File %3d of %d %q\n", i+1, len(files), inputPath)
-		err := outputPdfText(inputPath)
+		err := outputPdfTextRecover(inputPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Pdf File %3d of %d %q err=%v\n", i+1, len(files), inputPath, err)
-			if err == pdf.ErrEncrypted || err == pdfcore.ErrNoPdfVersion {
+			marker := ""
+			if err != pdf.ErrEncrypted && err != pdfcore.ErrNoPdfVersion {
+				marker = "******"
+			}
+			fmt.Fprintf(os.Stderr, "Pdf File %3d of %d %q err=%v %s\n",
+				i+1, len(files), inputPath, err, marker)
+			if err == pdf.ErrEncrypted || err == pdfcore.ErrNoPdfVersion || true {
 				continue
 			}
 			os.Exit(1)
@@ -76,6 +91,26 @@ func main() {
 		fmt.Println("======================== ||| ========================")
 	}
 	fmt.Fprintf(os.Stderr, "Done %d files\n", len(files))
+}
+
+// outputPdfTextRecover prints out contents of PDF file to stdout and recovers from panics
+func outputPdfTextRecover(inputPath string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "Recovered: %#q r=%#v\n", inputPath, r)
+			switch x := r.(type) {
+			case string:
+				err = errors.New(x)
+			case error:
+				err = x
+			default:
+				err = errors.New("Unknown panic")
+			}
+			panic(err)
+		}
+	}()
+	err = outputPdfText(inputPath)
+	return
 }
 
 // outputPdfText prints out contents of PDF file to stdout.
